@@ -1,0 +1,9 @@
+# Real settings never live here. `env/*.example` is the documentation; the
+# filled-in copies belong on the server, beside the application that reads
+# them, and nowhere else.
+*.env
+!*.env.example
+.env
+.DS_Store
+*.log
+backups/
