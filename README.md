@@ -109,6 +109,12 @@ rewritten to `index.html`, or a reader who reloads on `/showroom/melon` gets a
 
 ## Before it faces the internet
 
+- **`ONEID_ADAPTER` must not be `stub`.** The stub resolves a sign-in from a
+  username alone - no password, no proof - and `/auth/personas/` lists the
+  usernames with their roles. Two unauthenticated requests and the caller is
+  the platform owner. `check --deploy` errors on this and the deploy scripts
+  stop, the endpoint refuses on its own when `DEBUG=False`, and the persona
+  list comes back empty. Password sign-in is unaffected.
 - `DEBUG=False` and a real `DJANGO_SECRET_KEY` — 50+ random characters, not the
   development default. With `DEBUG=False` the security settings switch on by
   themselves: TLS redirect, HSTS, secure cookies, `X-Frame-Options: DENY`.
@@ -118,6 +124,14 @@ rewritten to `index.html`, or a reader who reloads on `/showroom/melon` gets a
 - Decide about `seed_demo`. It loads the illustrative pilot dataset — real
   figures for a demonstration, and nothing you want in a production database.
   A real deployment runs `seed_reference` only.
+- `CACHE_URL` pointing at a shared Redis if more than one worker runs. Every
+  rate limit in this project counts in the cache - the sign-in doors, the
+  assistant, the contact form - and the default is each process's own memory,
+  so three workers enforce three times the limit.
+- Restrict `/admin/`. It is the manual-adapter surface with full read and
+  write over every organisation's data, and nginx currently serves it to
+  anybody who asks. An `allow`/`deny` block on the office address, or a VPN,
+  costs nothing and removes the whole surface.
 - PostgreSQL, not the SQLite fallback. Two tables are written on every lot
   movement, and SQLite locks the file for each one.
 - Back up the database before every deploy. `lot_event` is append-only and
