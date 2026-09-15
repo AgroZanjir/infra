@@ -30,6 +30,12 @@ sudo -u "$USER" "$ROOT/backend/.venv/bin/pip" install -q -r "$ROOT/backend/requi
 say "Checking the deployment settings"
 sudo -u "$USER" "$ROOT/backend/.venv/bin/python" "$ROOT/backend/manage.py" check --deploy --fail-level WARNING
 
+say "Uploads"
+# The document vault writes photographs and scans here and nginx serves them
+# from /media/. Created now, and owned by the service, because the first
+# upload otherwise fails at midnight on a Friday.
+sudo -u "$USER" mkdir -p "$ROOT/backend/media"
+
 say "Database"
 sudo -u "$USER" "$ROOT/backend/.venv/bin/python" "$ROOT/backend/manage.py" migrate --noinput
 sudo -u "$USER" "$ROOT/backend/.venv/bin/python" "$ROOT/backend/manage.py" seed_reference

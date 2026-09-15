@@ -123,3 +123,20 @@ rewritten to `index.html`, or a reader who reloads on `/showroom/melon` gets a
 - Back up the database before every deploy. `lot_event` is append-only and
   hash-chained: it is the record the whole platform's credibility rests on, and
   it cannot be reconstructed from anything else.
+- Decide about the assistant. It is off unless `ANTHROPIC_API_KEY` is set, and
+  it says so rather than pretending. On, it costs money per question from the
+  open website, which is why `ASSISTANT_BURST_RATE` and `ASSISTANT_HOUR_RATE`
+  exist — and why `CACHES` should be shared if more than one worker runs, or
+  each worker enforces its own copy of the limit.
+- Somebody has to read the enquiries. The contact form writes to
+  `website_enquiry`, visible in the admin under **Public website**. A form
+  nobody reads is worse than no form, because the sender believes it arrived.
+- `backend/media/` exists and belongs to the service user, and nginx serves
+  `/media/`. `first-run.sh` creates it. The vault keeps the key and the
+  checksum in the database and the bytes here, so this directory is part of
+  the backup, not a cache — losing it loses the evidence photographs while
+  leaving every row that points at them.
+- The uploaded file's URL is its only guard: nginx serves `/media/` without
+  asking who is asking, and the name is 128 random bits. That is the trade for
+  a pilot on a filesystem. Moving the vault to S3 makes it a signed URL, and
+  `Document.url` is the one place that changes.
