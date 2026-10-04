@@ -56,11 +56,10 @@ listing is disabled; accepted uploads cannot execute as code.
    branches to `main`. Reviewers are optional; if enabled, approve within the app's
    45-minute infra wait deadline.
 2. Create an AgroZanjir-owned **GitHub App**, installed on **infra only**, with
-   repository **Contents: read/write**, **Actions: read/write**, Metadata read. No webhooks
+   repository **Contents: read/write**, **Actions: read**, Metadata read. No webhooks
    or organization permissions needed. Generate a private key. Short-lived App
    tokens trigger infra push workflows; ordinary GITHUB_TOKEN commits do not.
-   Existing installations must approve the Actions write permission so source
-   deploy retries can dispatch a fresh infra run without rebuilding the image.
+   Source repos commit image references and only read deployment results.
 3. Put the App ID/private key in all three prod environments. Give the App a narrow
    bypass of infra/main rules if rules block its direct image/state commits.
 4. Permit Actions package publication/deletion in organization policies. After each
@@ -186,16 +185,19 @@ The host key identifies the **server**; it is different from the deploy login ke
    access in a fresh SSH session afterward. SSH passwords are disabled, while
    `PermitRootLogin prohibit-password` keeps **root login with existing keys** working.
    Bootstrap needs no Django/database secrets or app images.
-3. Run **deploy-infra** to initialize PostgreSQL, Redis and Caddy.
-4. Push/dispatch each app CI on main. Configure private package access after first
-   publish. Apps wait for their matching infra deployment before registry cleanup.
-5. Seed reference data and create your administrator using the commands below.
+3. Push/dispatch each app CI on main. Each app commits its image reference here;
+   infra validates and deploys it, starting PostgreSQL, Redis and Caddy as needed.
+   No separate deploy-infra run is required for initial setup. Configure private
+   package access after first publish. Apps observe their matching infra deployment
+   before registry cleanup.
+4. Seed reference data and create your administrator using the commands below.
    Check website, sign-in, Django admin and both health endpoints.
 
 Caddy renews certificates and enables HTTP/1.1, HTTP/2 and HTTP/3 with Alt-Svc.
 QUIC requires end-to-end UDP 443. Docker's private IPv6 subnet does not give the
-VPS public IPv6: provider routing and AAAA must work. Initial setup expects direct
-DNS to the VPS; a CDN must explicitly support QUIC and the origin configuration.
+VPS public IPv6: provider routing and AAAA must work. The configured public domain
+can use direct DNS, a proxy or a CDN. Public probes report routing/security issues separately from
+container readiness and do not block initial rollout.
 Bootstrap is for dedicated machines and changes Docker, firewall and SSH settings.
 It preserves existing daemon JSON settings and can be rerun. Moving servers also
 requires transferring/restoring database, media and certificate data.
@@ -226,15 +228,22 @@ requires validation to succeed; failed or cancelled checks skip deployment.
 Validation also runs independently on pull requests, but has no separate push run.
 The reusable validation workflow checks the same commit as its caller.
 
-Rerunning a source deploy job reuses the already-published immutable image. If its
-desired image file is unchanged, the source dispatches a new app deployment from
-infra/main and waits for the returned run ID and its exact receipt. The requested
-image is checked before server access so a superseded retry cannot deploy another
-release. Source deploy and image-scan jobs use `!cancelled()` so cancellation can
-stop them. A missing push run fails after two minutes instead of waiting 45 minutes.
+Source repos write only their own desired image file, then observe the push-triggered
+infra deployment with Actions read access. They never dispatch or rerun infra
+workflows. If deployment fails, rerun the failed deployment in infra, then rerun
+the source deploy job to verify its receipt and perform cleanup. Unchanged tags
+reuse their existing commit; no retry marker or duplicate commit is created.
+Source deploy and image-scan jobs use `!cancelled()` and the release wait handles
+termination signals. A missing push run fails after two minutes; the overall
+wait is bounded to 45 minutes. A completed failed run fails immediately.
 
-Compose has a brief app restart. Success requires container readiness and external
-HTTPS probes (including Django admin CSS). Infra publishes a secret-free receipt
+Compose has a brief app restart. Success requires container readiness. Public
+HTTPS probes, including Django admin CSS, run afterward through the configured
+public entrypoint with bounded timeouts. Their failures emit warnings and
+Cloudflare response diagnostics without stopping or rolling back healthy apps.
+Use **deploy-infra** when changing shared Compose/Caddy/server configuration;
+bootstrap and app deployments are sufficient for a fresh server's initial rollout.
+Infra publishes a secret-free receipt
 both to Git and server state. App CI verifies exact infra commit/run/attempt before
 cleanup. Cleanup deletes **all other package versions across all pages**, retaining
 current/previous release indexes plus their platform and attestation manifests.

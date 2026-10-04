@@ -149,7 +149,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse((self.root / "state/backend.json").exists())
         self.assertIn("stop backend", self.log.read_text())
 
-    def test_cloudflare_challenge_reports_safe_headers_and_does_not_publish_success(self):
+    def test_cloudflare_challenge_warns_without_rolling_back_healthy_first_release(self):
         curl = self.bin / "curl"
         curl.write_text('#!/bin/bash\nwhile [[ $# -gt 0 ]]; do\n'
                         ' if [[ "$1" == --dump-header ]]; then\n'
@@ -158,12 +158,24 @@ class DeploymentTests(unittest.TestCase):
         for app in ("backend", "frontend"):
             with self.subTest(app=app):
                 result = self.deploy(app)
-                self.assertEqual(result.returncode, 22)
+                self.assert_ok(result)
+                self.assertIn("::warning::Public HTTPS probe failed", result.stdout)
                 self.assertIn("cf-ray: test-ray", result.stderr)
                 self.assertIn("Cloudflare challenged the public probe", result.stderr)
                 self.assertNotIn("private-cookie", result.stderr)
-                self.assertFalse((self.root / "state" / f"{app}.json").exists())
-                self.assertIn(f"stop {app}", self.log.read_text())
+                self.assertEqual(self.state(app)["current"], ref(app))
+                self.assertNotIn(f"stop {app}", self.log.read_text())
+
+    def test_public_gateway_failure_does_not_roll_back_healthy_update(self):
+        self.assert_ok(self.deploy())
+        curl = self.bin / "curl"
+        curl.write_text("#!/bin/bash\nexit 22\n")
+        newer = ref(letter="b", run=124)
+        result = self.deploy(candidate=newer)
+        self.assert_ok(result)
+        self.assertIn("::warning::Public HTTPS probe failed", result.stdout)
+        self.assertEqual((self.state()["current"], self.state()["previous"]), (newer, ref()))
+        self.assertNotIn("stop backend", self.log.read_text())
 
     def test_frontend_cannot_overwrite_shared_config_or_backend_state(self):
         self.assert_ok(self.deploy())

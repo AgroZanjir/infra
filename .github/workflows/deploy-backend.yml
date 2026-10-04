@@ -10,10 +10,6 @@ on:
         type: choice
         options: [deploy, rollback]
         default: deploy
-      expected_image:
-        description: Expected immutable image for a source-repository retry
-        type: string
-        default: ''
 permissions:
   contents: read
   packages: read
@@ -97,12 +93,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           IMAGE: ${{ steps.image.outputs.image }}
-          EXPECTED_IMAGE: ${{ inputs.expected_image }}
         run: |
-          if [[ -n "$EXPECTED_IMAGE" && "$IMAGE" != "$EXPECTED_IMAGE" ]]; then
-            echo '::error::Desired image changed since this deployment was requested.'
-            exit 1
-          fi
           python3 scripts/github_state.py assert-desired --app "$APP" --image "$IMAGE" --compose-file "apps/$APP/compose.yaml"
       - name: Deploy and verify the selected application
         if: inputs.operation != 'rollback'

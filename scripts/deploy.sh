@@ -70,14 +70,6 @@ done
 rollback() {
   local status=$?
   trap - ERR
-  if [[ -f "$stage/public-health.headers" ]]; then
-    echo 'Public HTTPS probe response (routing/security diagnostics):' >&2
-    awk 'tolower($0) ~ /^(http\/|server:|content-type:|cf-ray:|cf-mitigated:|cf-error-type:|cf-error-origin:)/' \
-      "$stage/public-health.headers" >&2
-    if grep -qi '^cf-mitigated: challenge' "$stage/public-health.headers"; then
-      echo 'Cloudflare challenged the public probe. Inspect the cf-ray in Cloudflare Security Events; curl cannot complete a browser challenge.' >&2
-    fi
-  fi
   echo "Deployment failed; restoring $app's previous application configuration." >&2
   if [[ -n "$current" ]]; then
     for file in compose.yaml Caddyfile; do
@@ -112,28 +104,33 @@ compose up -d --wait --wait-timeout 180 postgres redis caddy
 "$ROOT/scripts/backup.sh" --setup --locked
 compose up -d --no-deps --wait --wait-timeout 300 "$app"
 
-domain=$(sed -n 's/^DOMAIN=//p' "$ROOT/runtime/compose.env")
-if [[ "$app" = backend ]]; then
-  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
-    --dump-header "$stage/public-health.headers" \
-    --max-time 15 "https://$domain/api/v1/health/" >/dev/null
-  curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 15 \
-    --dump-header "$stage/public-health.headers" \
-    "https://$domain/django-admin/login/" >/dev/null
-  curl --fail --silent --show-error --max-time 15 --dump-header "$stage/public-health.headers" \
-    "https://$domain/static/admin/css/base.css" >/dev/null
-else
-  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
-    --dump-header "$stage/public-health.headers" \
-    --max-time 15 "https://$domain/healthz" >/dev/null
-  curl --fail --silent --show-error --max-time 15 --dump-header "$stage/public-health.headers" \
-    "https://$domain/admin/users" >/dev/null
-fi
-
 if [[ "$candidate" != "$current" ]]; then previous=$current; fi
 python3 "$ROOT/scripts/server_state.py" receipt "$app" "$stage/receipt.json" \
   "$candidate" "$previous" "$infra_sha" "$run_id" "$attempt"
 install -m 600 "$stage/receipt.json" "$state.tmp"
 mv "$state.tmp" "$state"
 trap - ERR
-echo "$app passed readiness and external HTTPS checks."
+echo "$app deployed and passed container readiness."
+
+# Public routing is observed after readiness succeeds. CDN policy cannot roll back
+# a healthy application, including its first rollout.
+domain=$(sed -n 's/^DOMAIN=//p' "$ROOT/runtime/compose.env")
+if [[ "$app" = backend ]]; then
+  paths=(/api/v1/health/ /django-admin/login/ /static/admin/css/base.css)
+else
+  paths=(/healthz /admin/users)
+fi
+for path in "${paths[@]}"; do
+  if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+    --dump-header "$stage/public-health.headers" "https://$domain$path" >/dev/null; then
+    echo "Public HTTPS probe passed: $path"
+  else
+    echo "::warning::Public HTTPS probe failed: $path. The healthy $app deployment remains running."
+    [[ -f "$stage/public-health.headers" ]] || continue
+    awk 'tolower($0) ~ /^(http\/|server:|content-type:|cf-ray:|cf-mitigated:|cf-error-type:|cf-error-origin:)/' \
+      "$stage/public-health.headers" >&2
+    if grep -qi '^cf-mitigated: challenge' "$stage/public-health.headers"; then
+      echo 'Cloudflare challenged the public probe. Inspect the cf-ray in Cloudflare Security Events; curl cannot complete a browser challenge.' >&2
+    fi
+  fi
+done
