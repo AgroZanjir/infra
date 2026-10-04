@@ -18,7 +18,12 @@ concurrency:
   queue: max
   cancel-in-progress: false
 jobs:
+  validate:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/validate.yml
+    permissions: {contents: read}
   deploy:
+    needs: validate
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     environment: prod

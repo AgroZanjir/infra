@@ -9,8 +9,10 @@ flowchart LR
   F[frontend CI] --> G
   B --> BI[apps/backend/image.env]
   F --> FI[apps/frontend/image.env]
-  BI --> BD[deploy-backend]
-  FI --> FD[deploy-frontend]
+  BI --> BV[Validate infrastructure]
+  FI --> FV[Validate infrastructure]
+  BV --> BD[deploy-backend]
+  FV --> FD[deploy-frontend]
   BD --> V[Ubuntu / Docker Compose]
   FD --> V
 ```
@@ -215,6 +217,12 @@ runs refuse superseded desired images/config. Backend waits for PostgreSQL/Redis
 checks strict production settings, migrates, and starts Gunicorn. Django admin
 static is baked into its image. No automatic demo seeds; OneID stub is disabled.
 App tests run against disposable PostgreSQL 18/Redis in CI.
+
+Every backend, frontend, shared-infra deployment and server bootstrap runs
+infrastructure validation first within the same workflow run. The server job
+requires validation to succeed; failed or cancelled checks skip deployment.
+Validation also runs independently on pull requests, but has no separate push run.
+The reusable validation workflow checks the same commit as its caller.
 
 Compose has a brief app restart. Success requires container readiness and external
 HTTPS probes (including Django admin CSS). Infra publishes a secret-free receipt
