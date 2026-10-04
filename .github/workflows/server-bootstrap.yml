@@ -1,0 +1,35 @@
+name: server bootstrap
+on:
+  workflow_dispatch:
+permissions: {contents: read}
+concurrency:
+  group: server-prod
+  queue: max
+  cancel-in-progress: false
+jobs:
+  bootstrap:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: prod
+    timeout-minutes: 30
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+      VPS_BOOTSTRAP_USERNAME: ${{ vars.VPS_BOOTSTRAP_USERNAME }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+      VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT || '22' }}
+      DOMAIN: ${{ vars.DOMAIN || 'agrozanjir.uz' }}
+      RESTIC_REPOSITORY: ${{ vars.RESTIC_REPOSITORY }}
+      RESTIC_PASSWORD: ${{ secrets.RESTIC_PASSWORD }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'us-east-1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - run: bash scripts/remote.sh bootstrap
+      - name: Bootstrap summary
+        run: |
+          echo '### Server bootstrap completed' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Docker, dual-stack networking, QUIC ports and storage are ready. Deploy backend, then frontend.' >> "$GITHUB_STEP_SUMMARY"

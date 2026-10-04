@@ -1,0 +1,68 @@
+name: deploy-infra
+on:
+  push:
+    branches: [main]
+    paths: [compose.yaml, Caddyfile, 'postgres/**', 'scripts/**', .github/workflows/deploy-infra.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: server-prod
+  queue: max
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: prod
+    timeout-minutes: 30
+    env:
+      APP: infra
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+      VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT || '22' }}
+      DOMAIN: ${{ vars.DOMAIN || 'agrozanjir.uz' }}
+      DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+      POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GUNICORN_WORKERS: ${{ vars.GUNICORN_WORKERS || '2' }}
+      GUNICORN_THREADS: ${{ vars.GUNICORN_THREADS || '4' }}
+      GUNICORN_TIMEOUT: ${{ vars.GUNICORN_TIMEOUT || '120' }}
+      GUNICORN_GRACEFUL_TIMEOUT: ${{ vars.GUNICORN_GRACEFUL_TIMEOUT || '30' }}
+      STARTUP_TIMEOUT: ${{ vars.STARTUP_TIMEOUT || '60' }}
+      SEEDED_PASSWORDS_ROTATED: ${{ vars.SEEDED_PASSWORDS_ROTATED || 'False' }}
+      ASSISTANT_ADAPTER: ${{ vars.ASSISTANT_ADAPTER || 'auto' }}
+      ASSISTANT_MODEL: ${{ vars.ASSISTANT_MODEL }}
+      ASSISTANT_EFFORT: ${{ vars.ASSISTANT_EFFORT }}
+      ASSISTANT_PANEL_EFFORT: ${{ vars.ASSISTANT_PANEL_EFFORT }}
+      ASSISTANT_MAX_TOKENS: ${{ vars.ASSISTANT_MAX_TOKENS }}
+      ASSISTANT_FALLBACKS: ${{ vars.ASSISTANT_FALLBACKS }}
+      ASSISTANT_BURST_RATE: ${{ vars.ASSISTANT_BURST_RATE }}
+      ASSISTANT_HOUR_RATE: ${{ vars.ASSISTANT_HOUR_RATE }}
+      ASSISTANT_PANEL_RATE: ${{ vars.ASSISTANT_PANEL_RATE }}
+      ENQUIRY_BURST_RATE: ${{ vars.ENQUIRY_BURST_RATE }}
+      ENQUIRY_DAY_RATE: ${{ vars.ENQUIRY_DAY_RATE }}
+      SIGNIN_ADDRESS_RATE: ${{ vars.SIGNIN_ADDRESS_RATE }}
+      SIGNIN_ACCOUNT_RATE: ${{ vars.SIGNIN_ACCOUNT_RATE }}
+      ACCESS_TOKEN_MINUTES: ${{ vars.ACCESS_TOKEN_MINUTES }}
+      REFRESH_TOKEN_DAYS: ${{ vars.REFRESH_TOKEN_DAYS }}
+      SECURE_HSTS_SECONDS: ${{ vars.SECURE_HSTS_SECONDS }}
+      RESTIC_REPOSITORY: ${{ vars.RESTIC_REPOSITORY }}
+      RESTIC_PASSWORD: ${{ secrets.RESTIC_PASSWORD }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'us-east-1' }}
+      GHCR_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - name: Refuse superseded shared configuration
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: python3 scripts/github_state.py assert-infra
+      - name: Apply shared services and configuration
+        run: bash scripts/remote.sh deploy infra

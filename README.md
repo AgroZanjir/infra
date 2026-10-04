@@ -1,156 +1,263 @@
-# Agro Zanjir Digital — infra
+# AgroZanjir production
 
-How the platform is served. Two applications, one database, one web server.
+Three repositories, one Ubuntu server, one domain. Apps publish immutable images
+and update their own image file in this repo. Only infra connects to the server.
 
-| Repository | What it is |
+```mermaid
+flowchart LR
+  B[backend CI] --> G[GHCR]
+  F[frontend CI] --> G
+  B --> BI[apps/backend/image.env]
+  F --> FI[apps/frontend/image.env]
+  BI --> BD[deploy-backend]
+  FI --> FD[deploy-frontend]
+  BD --> V[Ubuntu / Docker Compose]
+  FD --> V
+```
+
+## Layout
+
+- `compose.yaml`: PostgreSQL 18, Redis, Caddy and private networks.
+- `Caddyfile`: HTTPS/HTTP3 and same-origin routing.
+- `apps/backend/` and `apps/frontend/`: each has its own Compose fragment,
+  `image.env` desired digest reference and `deployed.json` successful receipt.
+- `scripts/remote.sh`: runner transport with pinned SSH host keys.
+- `scripts/bootstrap.sh`: prepare Ubuntu; no app images required.
+- `scripts/deploy.sh`: replace one app, verify and recover on failure.
+- `scripts/backup.sh` and `restore.sh`: optional encrypted offsite backup/restore.
+- `postgres/10-app.sh`: restricted application database role.
+
+Server files live in `/opt/agrozanjir`. Generated secrets live in private `runtime/`;
+Git contains none. PostgreSQL 18 mounts a persistent named volume at
+`/var/lib/postgresql`. Media and Caddy certificates persist under `data/`.
+Redis is shared and persistent. Only Caddy publishes ports. Backend, frontend and
+Caddy have non-root users, read-only root filesystems and dropped capabilities.
+Stock PostgreSQL/Redis entrypoints prepare volumes as root, then drop privileges.
+
+| Route | Service |
 | --- | --- |
-| [AgroZanjir/backend](https://github.com/AgroZanjir/backend) | Django 6 + DRF: the lot registry, the event log, the six clusters and the ports |
-| [AgroZanjir/frontend](https://github.com/AgroZanjir/frontend) | Vite + React: the public website and the eight operator panels |
-| [AgroZanjir/infra](https://github.com/AgroZanjir/infra) | this one |
+| `/`, SPA deep links, `/admin/*` | frontend |
+| `/api/v1/*` | Django, prefix preserved |
+| `/django-admin/` | Django administration |
+| `/static/*` | Django/WhiteNoise, collected during image build |
+| `/media/*` | persistent uploads served by Caddy |
+| `/healthz` | frontend health |
 
-## The shape of it
+**Media links are public: anyone possessing a URL can download the file without
+signing in. Random filenames are not authorization.** This retains pilot behavior;
+implement authenticated downloads before uploading sensitive documents. Directory
+listing is disabled; accepted uploads cannot execute as code.
 
-```
-                    ┌─────────────────────────────────────────┐
-   https://          │ nginx                                   │
-   agrozanjir.uz ───▶│  /            → /srv/agrozanjir/web     │  static bundle
-                     │  /api/, /admin/, /static/ → 127.0.0.1:8000
-                     └───────────────────────┬─────────────────┘
-                                             │
-                                   ┌─────────▼──────────┐
-                                   │ gunicorn           │  3 workers
-                                   │ config.wsgi        │
-                                   └─────────┬──────────┘
-                                             │
-                                   ┌─────────▼──────────┐
-                                   │ PostgreSQL 16      │
-                                   └────────────────────┘
-```
+## One-time GitHub setup
 
-**One origin, on purpose.** The web client and the API answer on the same host,
-which is what lets the refresh token stay a `SameSite=Lax` cookie. Splitting
-them across `agrozanjir.uz` and `api.agrozanjir.uz` still works — they share a
-registrable domain — but two genuinely different domains do not: the browser
-will not send a Lax cookie with an XHR, sign-in appears to work and the next
-reload signs the person out. If that is the topology you need, set
-`REFRESH_COOKIE_SAMESITE=None` and `REFRESH_COOKIE_SECURE=True` together;
-browsers accept `None` only over TLS.
+1. Create `prod` environments in **backend, frontend and infra**. Restrict deployment
+   branches to `main`. Reviewers are optional; if enabled, approve within the app's
+   45-minute infra wait deadline.
+2. Create an AgroZanjir-owned **GitHub App**, installed on **infra only**, with
+   repository **Contents: read/write**, **Actions: read**, Metadata read. No webhooks
+   or organization permissions needed. Generate a private key. Short-lived App
+   tokens trigger infra push workflows; ordinary GITHUB_TOKEN commits do not.
+3. Put the App ID/private key in all three prod environments. Give the App a narrow
+   bypass of infra/main rules if rules block its direct image/state commits.
+4. Permit Actions package publication/deletion in organization policies. After each
+   package's **first publish**, set GHCR visibility **Private**, link the package to
+   its source repo, and add **AgroZanjir/infra: Read** under **Manage Actions access**.
+   The source app repo needs **Admin** Actions package access for deletion. If the
+   first release fails before this access exists, configure it and rerun the release.
+5. Configure infra/prod below. Commit/push the implementation in its respective
+   repos. Bootstrap before app releases. Initial infra pushes may trigger a deploy
+   before bootstrap; rerun deploy-infra afterward. Initial empty image files are
+   intentional; app CI replaces them after a successful build/scan.
 
-## What is here
+| Repo / prod | Secrets | Variables |
+| --- | --- | --- |
+| backend | `INFRA_APP_PRIVATE_KEY` | `INFRA_APP_ID` |
+| frontend | `INFRA_APP_PRIVATE_KEY` | `INFRA_APP_ID` |
+| infra | `INFRA_APP_PRIVATE_KEY`, `VPS_HOST`, `VPS_USERNAME`, `VPS_SSH_KEY`, `VPS_SSH_KNOWN_HOSTS`, `DJANGO_SECRET_KEY`, `POSTGRES_ADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | `INFRA_APP_ID`; optional settings below |
 
-```
-nginx/agrozanjir.conf        the reverse proxy and the static bundle
-systemd/agrozanjir-api.service   gunicorn as a service
-env/backend.env.example      every variable the API reads
-env/frontend.env.example     the one the bundle is built with
-postgres/docker-compose.yml  PostgreSQL 16, if you are not using a managed one
-scripts/deploy.sh            pull, build, migrate, collectstatic, restart
-scripts/first-run.sh         everything above plus the seeds, once
-```
+GITHUB_TOKEN is automatic. **All runtime secrets/variables belong to infra/prod.**
+App repos have no server credentials. Production frontend needs no build variables:
+API requests use relative `/api/v1/` URLs. Optional `ANTHROPIC_API_KEY` is an infra
+secret; without it the assistant reports unavailable.
 
-Nothing here is generated. Read a file before you run it — the paths, the
-domain and the system user are yours to set, and each is marked `# CHANGE ME`.
+Use independent random database/cache passwords (20+ characters). Django's key
+must have 50+ characters and 5+ distinct characters. Single-line `$`, quotes and `#`
+are preserved as raw values; connection URL passwords are percent-encoded.
+Database admin and application passwords must differ. Existing PostgreSQL volumes
+keep their role passwords: do not rotate only the GitHub secret. Rotate roles and
+secrets together in a maintenance window. Redis rotation requires a Redis restart
+and backend redeployment.
 
-## First deployment
-
-```sh
-# 0. a machine with PostgreSQL 16, Python 3.12+, Node 20+, nginx and certbot
-sudo adduser --system --group agrozanjir
-sudo mkdir -p /srv/agrozanjir && sudo chown agrozanjir:agrozanjir /srv/agrozanjir
-
-# 1. the code
-sudo -u agrozanjir git clone https://github.com/AgroZanjir/backend.git  /srv/agrozanjir/backend
-sudo -u agrozanjir git clone https://github.com/AgroZanjir/frontend.git /srv/agrozanjir/frontend
-
-# 2. the settings
-sudo -u agrozanjir cp env/backend.env.example /srv/agrozanjir/backend/.env
-sudo -u agrozanjir $EDITOR /srv/agrozanjir/backend/.env     # every CHANGE ME
-
-# 3. the database, the bundle and the service
-sudo ./scripts/first-run.sh
-
-# 4. the web server
-sudo cp nginx/agrozanjir.conf /etc/nginx/sites-available/agrozanjir
-sudo ln -s /etc/nginx/sites-available/agrozanjir /etc/nginx/sites-enabled/
-sudo certbot --nginx -d agrozanjir.uz -d www.agrozanjir.uz
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-`first-run.sh` ends by printing the accounts it created and their passwords.
-That list is printed once and stored only as a hash; there is no way to read a
-password back afterwards.
-
-## Every deployment after the first
-
-```sh
-sudo ./scripts/deploy.sh
-```
-
-Pulls both repositories, installs what changed, runs migrations, rebuilds the
-bundle, collects static files and restarts the API. It does **not** run the
-seeds: `seed_demo` would refuse anyway, and `seed_accounts` would do nothing
-unless asked to rotate.
-
-## The four settings that are easy to get wrong
-
-Each fails in a way that does not obviously point at it, which is why they are
-listed together:
-
-| Setting | Wrong looks like |
+| Optional variable | Default / use |
 | --- | --- |
-| `VITE_API_BASE_URL` | Vite inlines it at **build** time; changing the API's address means rebuilding the bundle, not restarting anything |
-| `CORS_ALLOWED_ORIGINS` | every request fails in the browser and succeeds in `curl` |
-| `CSRF_TRUSTED_ORIGINS` | reads work, writes come back 403 |
-| `REFRESH_COOKIE_SAMESITE` | signing in works, reloading the page signs you out |
+| `DOMAIN` | `agrozanjir.uz` |
+| `VPS_SSH_PORT` | `22` |
+| `VPS_BOOTSTRAP_USERNAME` | initial root/sudo login, default VPS_USERNAME |
+| `GUNICORN_WORKERS`, `GUNICORN_THREADS` | `2`, `4` |
+| `GUNICORN_TIMEOUT`, `GUNICORN_GRACEFUL_TIMEOUT` | `120`, `30` seconds |
+| `STARTUP_TIMEOUT` | `60` seconds, database/cache startup wait |
+| `SEEDED_PASSWORDS_ROTATED` | `False`, assert only after rotating pilot accounts |
+| `ASSISTANT_ADAPTER` | `auto` |
+| `ASSISTANT_MODEL`, `ASSISTANT_EFFORT`, `ASSISTANT_PANEL_EFFORT`, `ASSISTANT_MAX_TOKENS`, `ASSISTANT_FALLBACKS` | backend defaults |
+| `ASSISTANT_BURST_RATE`, `ASSISTANT_HOUR_RATE`, `ASSISTANT_PANEL_RATE`, `ENQUIRY_BURST_RATE`, `ENQUIRY_DAY_RATE`, `SIGNIN_ADDRESS_RATE`, `SIGNIN_ACCOUNT_RATE` | backend defaults |
+| `ACCESS_TOKEN_MINUTES`, `REFRESH_TOKEN_DAYS`, `SECURE_HSTS_SECONDS` | backend defaults |
 
-And one that is not a setting: **the SPA fallback**. Every unknown path must be
-rewritten to `index.html`, or a reader who reloads on `/showroom/melon` gets a
-404 from nginx. That is the `try_files` line in the config.
+After updating runtime settings dispatch deploy-backend with operation `deploy`.
+Shared configuration changes trigger deploy-infra; image files do not trigger it.
 
-## Before it faces the internet
+## First server
 
-- **`ONEID_ADAPTER` must not be `stub`.** The stub resolves a sign-in from a
-  username alone - no password, no proof - and `/auth/personas/` lists the
-  usernames with their roles. Two unauthenticated requests and the caller is
-  the platform owner. `check --deploy` errors on this and the deploy scripts
-  stop, the endpoint refuses on its own when `DEBUG=False`, and the persona
-  list comes back empty. Password sign-in is unaffected.
-- `DEBUG=False` and a real `DJANGO_SECRET_KEY` — 50+ random characters, not the
-  development default. With `DEBUG=False` the security settings switch on by
-  themselves: TLS redirect, HSTS, secure cookies, `X-Frame-Options: DENY`.
-- `manage.py check --deploy` reports **no issues**. It is the gate.
-- `seed_accounts --rotate`. The passwords a pilot was demonstrated with are not
-  passwords for a public host.
-- Decide about `seed_demo`. It loads the illustrative pilot dataset — real
-  figures for a demonstration, and nothing you want in a production database.
-  A real deployment runs `seed_reference` only.
-- `CACHE_URL` pointing at a shared Redis if more than one worker runs. Every
-  rate limit in this project counts in the cache - the sign-in doors, the
-  assistant, the contact form - and the default is each process's own memory,
-  so three workers enforce three times the limit.
-- Restrict `/admin/`. It is the manual-adapter surface with full read and
-  write over every organisation's data, and nginx currently serves it to
-  anybody who asks. An `allow`/`deny` block on the office address, or a VPN,
-  costs nothing and removes the whole surface.
-- PostgreSQL, not the SQLite fallback. Two tables are written on every lot
-  movement, and SQLite locks the file for each one.
-- Back up the database before every deploy. `lot_event` is append-only and
-  hash-chained: it is the record the whole platform's credibility rests on, and
-  it cannot be reconstructed from anything else.
-- Decide about the assistant. It is off unless `ANTHROPIC_API_KEY` is set, and
-  it says so rather than pretending. On, it costs money per question from the
-  open website, which is why `ASSISTANT_BURST_RATE` and `ASSISTANT_HOUR_RATE`
-  exist — and why `CACHES` should be shared if more than one worker runs, or
-  each worker enforces its own copy of the limit.
-- Somebody has to read the enquiries. The contact form writes to
-  `website_enquiry`, visible in the admin under **Public website**. A form
-  nobody reads is worse than no form, because the sender believes it arrived.
-- `backend/media/` exists and belongs to the service user, and nginx serves
-  `/media/`. `first-run.sh` creates it. The vault keeps the key and the
-  checksum in the database and the bytes here, so this directory is part of
-  the backup, not a cache — losing it loses the evidence photographs while
-  leaving every row that points at them.
-- The uploaded file's URL is its only guard: nginx serves `/media/` without
-  asking who is asking, and the name is 128 random bits. That is the trade for
-  a pilot on a filesystem. Moving the vault to S3 makes it a signed URL, and
-  `Document.url` is the one place that changes.
+Recommended: fresh **Ubuntu 24.04 LTS amd64**. Bootstrap also accepts 22.04/26.04 LTS.
+Initial SSH login must have root or passwordless sudo. Final VPS_USERNAME must be
+non-root, e.g. `deploy`. The same private key must already authenticate the initial
+account; bootstrap installs its public key for deploy. VPS_BOOTSTRAP_USERNAME may
+be `root`. Keep provider console access for first machine configuration.
+
+Obtain the SSH host fingerprint/key from the provider console or another trusted
+channel. VPS_SSH_KNOWN_HOSTS contains independently verified known_hosts line(s)
+for exact VPS_HOST; use `[host]:port` for nonstandard ports. Do not blindly trust
+network ssh-keyscan output. Strict verification is required.
+
+1. Point DNS **A** to the server's IPv4. Add **AAAA** only for working provider-routed
+   IPv6. Allow TCP 80/443, UDP 443, SSH TCP and ICMPv6 in provider firewalls.
+2. Run **server bootstrap** on main. It installs Docker/Compose, prepares users,
+   persistence, IPv6/QUIC buffers, host/Docker firewall rules and maintenance timers.
+   It verifies a second deploy-user SSH connection before disabling root/password
+   login. Docker group membership is root-equivalent: keep the key infrastructure-only.
+   Bootstrap needs no Django/database secrets or app images.
+3. Run **deploy-infra** to initialize PostgreSQL, Redis and Caddy.
+4. Push/dispatch each app CI on main. Configure private package access after first
+   publish. Apps wait for their matching infra deployment before registry cleanup.
+5. Seed reference data and create your administrator using the commands below.
+   Check website, sign-in, Django admin and both health endpoints.
+
+Caddy renews certificates and enables HTTP/1.1, HTTP/2 and HTTP/3 with Alt-Svc.
+QUIC requires end-to-end UDP 443. Docker's private IPv6 subnet does not give the
+VPS public IPv6: provider routing and AAAA must work. Initial setup expects direct
+DNS to the VPS; a CDN must explicitly support QUIC and the origin configuration.
+Bootstrap is for dedicated machines and changes Docker, firewall and SSH settings.
+It preserves existing daemon JSON settings and can be rerun. Moving servers also
+requires transferring/restoring database, media and certificate data.
+Rerunning bootstrap requires an accessible administrator with passwordless sudo;
+the deployment user has no general sudo grant. If the initial account was root,
+use the provider console to arrange administrator access after root SSH is disabled.
+
+## Release and recovery
+
+Three parallel source security gates (Gitleaks, Semgrep, Trivy), then tests,
+build/publish, Trivy image scan, infra update/deployment wait, and cleanup-ghcr.
+PRs build and scan without publishing or contacting infra. Tags are
+`backend-<full-source-sha>-<run-id>-<attempt>` or the frontend equivalent and desired
+references include `@sha256:<digest>`. No mutable latest tags; rebuilds get new names.
+
+All server mutations share one GitHub queue and server flock. Apps replace only
+their own fragment/service; shared configuration has a separate workflow. Stale
+runs refuse superseded desired images/config. Backend waits for PostgreSQL/Redis,
+checks strict production settings, migrates, and starts Gunicorn. Django admin
+static is baked into its image. No automatic demo seeds; OneID stub is disabled.
+App tests run against disposable PostgreSQL 18/Redis in CI.
+
+Compose has a brief app restart. Success requires container readiness and external
+HTTPS probes (including Django admin CSS). Infra publishes a secret-free receipt
+both to Git and server state. App CI verifies exact infra commit/run/attempt before
+cleanup. Cleanup deletes **all other package versions across all pages**, retaining
+current/previous release indexes plus their platform and attestation manifests.
+Stale cleanup reruns skip deletion. Failed image scans/deployments never clean up;
+failed build versions disappear on the next successful release. Use these packages
+only for their respective app. No deployment script globally prunes server images.
+
+Failed deployments restore the old app image/config; successful state remains
+unchanged. Failed first releases stop the app. A failure after server verification
+but before the Git state commit may require an infra deploy rerun to reconcile the
+receipt; cleanup waits for that success.
+Failed shared deployments also restore their previous Compose, Caddy, scripts and
+runtime files and try to recover the shared services.
+
+Dispatch deploy-backend/deploy-frontend with `operation=rollback` to commit a retained
+working image through the same normal trigger. No arbitrary tag input. After an
+automatic recovery it first reconciles desired Git state to the current working
+image. **Image rollback never reverses migrations.** Keep migrations compatible
+with the preceding image; destructive changes require a separately tested restore.
+
+## Operations
+
+SSH as the deployment user:
+
+```bash
+cd /opt/agrozanjir
+source scripts/common.sh
+COMPOSE_APP=backend compose ps
+COMPOSE_APP=backend compose logs --tail 100 backend
+COMPOSE_APP=backend compose exec backend python manage.py seed_reference
+COMPOSE_APP=backend compose exec backend python manage.py createsuperuser
+COMPOSE_APP=frontend compose logs --tail 100 frontend
+```
+
+Never run seed_demo/seed_accounts on a fresh production database. Existing pilot
+accounts with usable passwords block startup until rotated and
+SEEDED_PASSWORDS_ROTATED=True is asserted. Daily token maintenance runs at 03:00
+Asia/Tashkent. Database application role is not a superuser.
+**Never run `docker compose down --volumes` on production.** Monitor disk usage,
+application logs, workflow failures and backup timers.
+
+## Optional encrypted S3 backups
+
+Store in infra/prod:
+
+| Type | Names |
+| --- | --- |
+| Variables | `RESTIC_REPOSITORY` e.g. `s3:https://s3.example.com/bucket/agrozanjir`, `AWS_DEFAULT_REGION` (default us-east-1) |
+| Secrets | `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+
+Create bucket/prefix first and scope credentials to it. Keep RESTIC_PASSWORD securely
+outside the VPS. Restic encrypts database dumps and media before upload. Missing or
+partial settings **disable backups without blocking bootstrap/deploy**. Complete
+but broken configuration fails visibly. Updates to an already-deployed backend
+back up before migrations; a configured backup failure blocks the replacement.
+Dumps and media are sequential, not an atomic cross-resource snapshot; use a write
+maintenance window if strictly consistent snapshots are required.
+
+Daily 02:30 Asia/Tashkent backups retain 7 daily, 4 weekly and 6 monthly snapshots;
+Sunday 03:30 integrity checks run restic check. Inspect with
+`systemctl list-timers 'agrozanjir-*'` and `journalctl -u agrozanjir-backup.service`.
+
+```bash
+cd /opt/agrozanjir
+bash scripts/backup.sh
+python3 scripts/restic_cmd.py snapshots
+# Deliberate destructive operator action: restores database AND media with backend stopped.
+sudo bash scripts/restore.sh <snapshot-id-or-latest> --confirm-restore
+```
+
+The restore command requires a trusted administrator session/provider console;
+the deployment user's restricted sudo grant covers only SSH finalization.
+
+Test restore on a spare VPS. Restoring needs a compatible application schema and
+runtime settings. A failed database restore keeps the backend stopped and preserves
+restored files for inspection. New machine order: bootstrap, shared/runtime setup,
+data restore, compatible app deployment. Lost RESTIC_PASSWORD means lost backups.
+
+## Validation and maintenance
+
+```bash
+python3 -m unittest discover -s tests -v
+shellcheck -x -P SCRIPTDIR scripts/*.sh
+python3 tests/validate_compose.py
+```
+
+Real Bash failure-path tests use fake Docker/HTTPS clients. Compose validation uses
+synthetic secrets and starts no services. The Ubuntu bootstrap's systemd/firewall/SSH
+steps still need validation on your target VPS; container tests cannot certify
+provider routing. Base images and Actions are digest/commit pinned: update deliberately
+and rerun tests/scans. Frontend has a narrow expiring build-dependency exception
+in its README and .trivyignore.yaml.
+
+Implementation validation on 2026-10-04: 208 Django tests against PostgreSQL 18.6
+and Redis, 122 frontend tests/typecheck, 10 release-safety tests per app and 12 infra
+tests passed. Both builds and source/runtime HIGH/CRITICAL scans passed. HTTPS SPA,
+API, Django admin/CSS, IPv6 frontend listener and a real HTTP/3 QUIC request passed
+in an isolated local Compose stack. Stopping Redis produced a generic 503 and
+restarting it restored readiness. PostgreSQL permission queries were corrected to
+avoid DISTINCT/FOR UPDATE combinations that worked in SQLite but failed in PostgreSQL.
+The live GitHub/VPS rollout and provider IPv6 routing await environment setup;
+bootstrap has not been executed on a production Ubuntu host.

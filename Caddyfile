@@ -1,0 +1,45 @@
+{
+	admin 127.0.0.1:2019
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+# Internal readiness endpoint; port 8080 is never published.
+http://:8080 {
+	respond /healthz "ok" 200
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		Strict-Transport-Security "max-age=31536000"
+		-X-Powered-By
+	}
+	request_body {
+		max_size 10MB
+	}
+
+	# Preserve the prefix. Django's URL patterns already include /api/.
+	@django path /api /api/* /django-admin /django-admin/* /static/*
+	handle @django {
+		reverse_proxy backend:8000 {
+			header_up X-Forwarded-For {http.request.remote.host}
+			header_up X-Forwarded-Proto {scheme}
+			flush_interval -1
+		}
+	}
+
+	# Public by design for this pilot: possession of a URL grants access.
+	# No directory listing and no executable upload types are accepted by Django.
+	handle_path /media/* {
+		root * /srv/media
+		file_server
+	}
+
+	handle {
+		reverse_proxy frontend:8080
+	}
+}

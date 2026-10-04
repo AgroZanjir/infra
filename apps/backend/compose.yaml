@@ -1,0 +1,24 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?backend image reference is required}
+    user: "10001:10001"
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: ${DEPLOY_ROOT:-/opt/agrozanjir}/runtime/backend.env
+        format: raw
+    volumes:
+      - ${DEPLOY_ROOT:-/opt/agrozanjir}/data/media:/app/media
+    networks: [web, data]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

@@ -1,77 +1,126 @@
 #!/usr/bin/env bash
-#
-# Every deployment after the first.
-#
-#   sudo ./scripts/deploy.sh
-#
-# Pulls both repositories, installs what changed, migrates, rebuilds the bundle
-# and restarts the API. It does not touch the seeds: `seed_demo` would refuse
-# on a database that already has lots, and `seed_accounts` does nothing without
-# --rotate.
+set -Eeuo pipefail
+source "$(dirname "$0")/common.sh"
+app=${1:?application is required}
+stage=${2:?staging directory is required}
+infra_sha=${3:?infra commit is required}
+run_id=${4:?run id is required}
+attempt=${5:?attempt is required}
+[[ "$app" = backend || "$app" = frontend || "$app" = infra ]] || exit 1
+[[ -d "$stage/runtime" && -d "$stage/scripts" ]] || exit 1
+lock_server
 
-set -euo pipefail
+if [[ "$app" = infra ]]; then
+  mkdir -p "$stage/previous-shared"
+  for file in compose.yaml Caddyfile; do
+    [[ ! -f "$ROOT/$file" ]] || cp "$ROOT/$file" "$stage/previous-shared/$file"
+  done
+  for directory in runtime scripts postgres; do
+    [[ ! -d "$ROOT/$directory" ]] || cp -a "$ROOT/$directory" "$stage/previous-shared/$directory"
+  done
+  # shellcheck disable=SC2329 # Called indirectly by the ERR trap below.
+  rollback_infra() {
+    local status=$?
+    trap - ERR
+    echo 'Shared deployment failed; restoring previous configuration.' >&2
+    for file in compose.yaml Caddyfile; do
+      [[ ! -f "$stage/previous-shared/$file" ]] || cp "$stage/previous-shared/$file" "$ROOT/$file"
+    done
+    for directory in runtime scripts postgres; do
+      if [[ -d "$stage/previous-shared/$directory" ]]; then
+        rm -f "$ROOT/$directory"/*
+        cp -a "$stage/previous-shared/$directory/." "$ROOT/$directory/"
+      fi
+    done
+    COMPOSE_APP='' compose up -d --wait --wait-timeout 180 postgres redis caddy \
+      || echo 'Shared recovery failed; inspect the server.' >&2
+    exit "$status"
+  }
+  trap rollback_infra ERR
+  install_bundle "$stage"
+  install_runtime "$stage"
+  COMPOSE_APP='' compose config --quiet
+  COMPOSE_APP='' compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  COMPOSE_APP='' compose up -d --wait --wait-timeout 180 postgres redis caddy
+  "$ROOT/scripts/backup.sh" --setup --locked
+  trap - ERR
+  echo 'Shared services and configuration applied. Redeploy backend to apply changed runtime variables.'
+  exit 0
+fi
 
-# CHANGE ME if the tree does not live here.
-ROOT=/srv/agrozanjir
-SERVICE=agrozanjir-api
-USER=agrozanjir
+candidate=$(python3 "$stage/scripts/server_state.py" image "$app" "$stage/apps/$app/image.env")
+state="$ROOT/state/$app.json"
+current=$(python3 "$stage/scripts/server_state.py" field "$state" current)
+previous=$(python3 "$stage/scripts/server_state.py" field "$state" previous)
 
-say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+# Back up using the running database/config before replacing runtime secrets.
+if [[ "$app" = backend && -n "$current" ]]; then
+  BACKUP_CONFIG="$stage/runtime/backup.json" "$ROOT/scripts/backup.sh" --locked
+fi
 
-# The event log is append-only and hash-chained: it is the record the whole
-# platform's credibility rests on, and it cannot be reconstructed. Take the
-# backup before anything else, and stop if it fails.
-say "Backing up the database"
-BACKUP="$ROOT/backups/$(date +%Y-%m-%d-%H%M).sql.gz"
-mkdir -p "$ROOT/backups"
-sudo -u "$USER" bash -c "set -a; source $ROOT/backend/.env; set +a; pg_dump \"\$DATABASE_URL\"" | gzip > "$BACKUP"
-echo "    $BACKUP"
+mkdir -p "$stage/previous/apps/$app"
+for file in compose.yaml Caddyfile; do
+  [[ ! -f "$ROOT/$file" ]] || cp "$ROOT/$file" "$stage/previous/$file"
+done
+for file in compose.yaml image.env; do
+  [[ ! -f "$ROOT/apps/$app/$file" ]] || cp "$ROOT/apps/$app/$file" "$stage/previous/apps/$app/$file"
+done
+[[ ! -d "$ROOT/runtime" ]] || cp -a "$ROOT/runtime" "$stage/previous/runtime"
 
-say "Pulling the backend"
-sudo -u "$USER" git -C "$ROOT/backend" pull --ff-only
+rollback() {
+  local status=$?
+  trap - ERR
+  echo "Deployment failed; restoring $app's previous application configuration." >&2
+  if [[ -n "$current" ]]; then
+    for file in compose.yaml Caddyfile; do
+      [[ ! -f "$stage/previous/$file" ]] || cp "$stage/previous/$file" "$ROOT/$file"
+    done
+    for file in compose.yaml image.env; do
+      [[ ! -f "$stage/previous/apps/$app/$file" ]] || cp "$stage/previous/apps/$app/$file" "$ROOT/apps/$app/$file"
+    done
+    if [[ -d "$stage/previous/runtime" ]]; then
+      rm -f "$ROOT"/runtime/*
+      cp -a "$stage/previous/runtime/." "$ROOT/runtime/"
+    fi
+    COMPOSE_APP="$app" compose up -d --no-deps --wait --wait-timeout 300 "$app" \
+      && echo 'Previous application image restored. Database migrations were not reversed.' >&2 \
+      || echo 'ROLLBACK FAILED: inspect the service on the server.' >&2
+  else
+    COMPOSE_APP="$app" compose stop "$app" || true
+    echo 'First deployment failed; there is no previous image to restore.' >&2
+  fi
+  exit "$status"
+}
+trap rollback ERR
 
-say "Installing backend dependencies"
-sudo -u "$USER" "$ROOT/backend/.venv/bin/pip" install -q -r "$ROOT/backend/requirements.txt"
+install_bundle "$stage" "$app"
+install_runtime "$stage"
+install -m 600 "$stage/apps/$app/image.env" "$ROOT/apps/$app/image.env"
+export COMPOSE_APP="$app"
+compose config --quiet
+compose pull "$app"
+compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+compose up -d --wait --wait-timeout 180 postgres redis caddy
+"$ROOT/scripts/backup.sh" --setup --locked
+compose up -d --no-deps --wait --wait-timeout 300 "$app"
 
-say "Checking the deployment settings"
-# The gate. If this reports anything, nothing below should run.
-sudo -u "$USER" "$ROOT/backend/.venv/bin/python" "$ROOT/backend/manage.py" check --deploy --fail-level WARNING
+domain=$(sed -n 's/^DOMAIN=//p' "$ROOT/runtime/compose.env")
+if [[ "$app" = backend ]]; then
+  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+    --max-time 15 "https://$domain/api/v1/health/" >/dev/null
+  curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 15 \
+    "https://$domain/django-admin/login/" >/dev/null
+  curl --fail --silent --show-error --max-time 15 "https://$domain/static/admin/css/base.css" >/dev/null
+else
+  curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+    --max-time 15 "https://$domain/healthz" >/dev/null
+  curl --fail --silent --show-error --max-time 15 "https://$domain/admin/users" >/dev/null
+fi
 
-say "Migrating"
-sudo -u "$USER" "$ROOT/backend/.venv/bin/python" "$ROOT/backend/manage.py" migrate --noinput
-
-say "Reference data"
-# Idempotent, and it carries the product's own catalogues: ten capabilities,
-# thirty-seven roles, thirteen organisation types, six verification checks. A
-# label edited upstream reaches production here, without a migration.
-sudo -u "$USER" "$ROOT/backend/.venv/bin/python" "$ROOT/backend/manage.py" seed_reference
-
-say "Collecting static files"
-sudo -u "$USER" "$ROOT/backend/.venv/bin/python" "$ROOT/backend/manage.py" collectstatic --noinput
-
-say "Pulling the frontend"
-sudo -u "$USER" git -C "$ROOT/frontend" pull --ff-only
-
-say "Building the bundle"
-# VITE_API_BASE_URL is inlined at build time. It comes from the frontend's
-# .env, so that file is what to edit if the API moves - not this script.
-sudo -u "$USER" bash -c "cd $ROOT/frontend && npm ci --silent && npm run build"
-
-say "Publishing the bundle"
-# Built into a temporary directory and moved into place, so a reader never
-# meets a half-copied bundle.
-sudo -u "$USER" rm -rf "$ROOT/web.new"
-sudo -u "$USER" cp -r "$ROOT/frontend/dist" "$ROOT/web.new"
-sudo -u "$USER" rm -rf "$ROOT/web.old"
-if [ -d "$ROOT/web" ]; then sudo -u "$USER" mv "$ROOT/web" "$ROOT/web.old"; fi
-sudo -u "$USER" mv "$ROOT/web.new" "$ROOT/web"
-
-say "Restarting the API"
-systemctl restart "$SERVICE"
-sleep 2
-systemctl --no-pager --lines=0 status "$SERVICE"
-
-say "Health"
-curl -fsS http://127.0.0.1:8000/api/v1/health/ && echo
-
-say "Done"
+if [[ "$candidate" != "$current" ]]; then previous=$current; fi
+python3 "$ROOT/scripts/server_state.py" receipt "$app" "$stage/receipt.json" \
+  "$candidate" "$previous" "$infra_sha" "$run_id" "$attempt"
+install -m 600 "$stage/receipt.json" "$state.tmp"
+mv "$state.tmp" "$state"
+trap - ERR
+echo "$app passed readiness and external HTTPS checks."

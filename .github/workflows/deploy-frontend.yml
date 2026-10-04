@@ -1,0 +1,108 @@
+name: deploy-frontend
+on:
+  push:
+    branches: [main]
+    paths: [apps/frontend/image.env, apps/frontend/compose.yaml, .github/workflows/deploy-frontend.yml]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Deploy desired image, or request rollback to the retained working image
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: server-prod
+  queue: max
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: prod
+    timeout-minutes: 30
+    env:
+      APP: frontend
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+      VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT || '22' }}
+      DOMAIN: ${{ vars.DOMAIN || 'agrozanjir.uz' }}
+      DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+      POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GUNICORN_WORKERS: ${{ vars.GUNICORN_WORKERS || '2' }}
+      GUNICORN_THREADS: ${{ vars.GUNICORN_THREADS || '4' }}
+      GUNICORN_TIMEOUT: ${{ vars.GUNICORN_TIMEOUT || '120' }}
+      GUNICORN_GRACEFUL_TIMEOUT: ${{ vars.GUNICORN_GRACEFUL_TIMEOUT || '30' }}
+      STARTUP_TIMEOUT: ${{ vars.STARTUP_TIMEOUT || '60' }}
+      SEEDED_PASSWORDS_ROTATED: ${{ vars.SEEDED_PASSWORDS_ROTATED || 'False' }}
+      ASSISTANT_ADAPTER: ${{ vars.ASSISTANT_ADAPTER || 'auto' }}
+      ASSISTANT_MODEL: ${{ vars.ASSISTANT_MODEL }}
+      ASSISTANT_EFFORT: ${{ vars.ASSISTANT_EFFORT }}
+      ASSISTANT_PANEL_EFFORT: ${{ vars.ASSISTANT_PANEL_EFFORT }}
+      ASSISTANT_MAX_TOKENS: ${{ vars.ASSISTANT_MAX_TOKENS }}
+      ASSISTANT_FALLBACKS: ${{ vars.ASSISTANT_FALLBACKS }}
+      ASSISTANT_BURST_RATE: ${{ vars.ASSISTANT_BURST_RATE }}
+      ASSISTANT_HOUR_RATE: ${{ vars.ASSISTANT_HOUR_RATE }}
+      ASSISTANT_PANEL_RATE: ${{ vars.ASSISTANT_PANEL_RATE }}
+      ENQUIRY_BURST_RATE: ${{ vars.ENQUIRY_BURST_RATE }}
+      ENQUIRY_DAY_RATE: ${{ vars.ENQUIRY_DAY_RATE }}
+      SIGNIN_ADDRESS_RATE: ${{ vars.SIGNIN_ADDRESS_RATE }}
+      SIGNIN_ACCOUNT_RATE: ${{ vars.SIGNIN_ACCOUNT_RATE }}
+      ACCESS_TOKEN_MINUTES: ${{ vars.ACCESS_TOKEN_MINUTES }}
+      REFRESH_TOKEN_DAYS: ${{ vars.REFRESH_TOKEN_DAYS }}
+      SECURE_HSTS_SECONDS: ${{ vars.SECURE_HSTS_SECONDS }}
+      RESTIC_REPOSITORY: ${{ vars.RESTIC_REPOSITORY }}
+      RESTIC_PASSWORD: ${{ secrets.RESTIC_PASSWORD }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'us-east-1' }}
+      GHCR_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ vars.INFRA_APP_ID }}
+          private-key: ${{ secrets.INFRA_APP_PRIVATE_KEY }}
+          owner: AgroZanjir
+          repositories: infra
+          permission-contents: write
+      - name: Request rollback through the image-file trigger
+        if: inputs.operation == 'rollback'
+        env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
+        run: python3 scripts/github_state.py rollback --app "$APP"
+      - name: Validate immutable desired image
+        if: inputs.operation != 'rollback'
+        id: image
+        run: echo "image=$(python3 scripts/server_state.py image "$APP" "apps/$APP/image.env")" >> "$GITHUB_OUTPUT"
+      - name: Refuse a superseded release
+        if: inputs.operation != 'rollback'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: python3 scripts/github_state.py assert-desired --app "$APP" --image "$IMAGE" --compose-file "apps/$APP/compose.yaml"
+      - name: Deploy and verify the selected application
+        if: inputs.operation != 'rollback'
+        run: bash scripts/remote.sh deploy "$APP"
+      - name: Publish successful state for safe registry cleanup
+        if: inputs.operation != 'rollback'
+        env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
+        run: python3 scripts/github_state.py publish --app "$APP" --receipt "deployment-receipt/$APP.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: inputs.operation != 'rollback'
+        with:
+          name: deployment-receipt
+          path: deployment-receipt/*.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Deployment summary
+        if: success()
+        run: echo "### $APP production operation completed" >> "$GITHUB_STEP_SUMMARY"

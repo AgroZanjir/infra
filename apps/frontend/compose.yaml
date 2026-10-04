@@ -1,0 +1,15 @@
+services:
+  frontend:
+    image: ${FRONTEND_IMAGE:?frontend image reference is required}
+    user: "101:101"
+    restart: unless-stopped
+    init: true
+    networks: [web]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
