@@ -18,7 +18,7 @@ if [[ "$app" = infra ]]; then
   for directory in runtime scripts postgres; do
     [[ ! -d "$ROOT/$directory" ]] || cp -a "$ROOT/$directory" "$stage/previous-shared/$directory"
   done
-  # shellcheck disable=SC2329 # Called indirectly by the ERR trap below.
+  # shellcheck disable=SC2317,SC2329 # Called indirectly by the ERR trap below.
   rollback_infra() {
     local status=$?
     trap - ERR

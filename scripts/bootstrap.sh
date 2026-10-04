@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-trap 'status=$?; printf "Bootstrap failed at %s:%s (exit %s).\n" "${BASH_SOURCE[0]}" "$LINENO" "$status" >&2; exit "$status"' ERR
+bootstrap_error() {
+  local status=$1 file=$2 line=$3
+  trap - ERR
+  printf 'Bootstrap failed at %s:%s (exit %s).\n' "$file" "$line" "$status" >&2
+  exit "$status"
+}
+trap 'bootstrap_error "$?" "${BASH_SOURCE[0]}" "$LINENO"' ERR
 source "$(dirname "$0")/common.sh"
 stage=${1:?staging directory is required}
 username=${2:?deployment username is required}

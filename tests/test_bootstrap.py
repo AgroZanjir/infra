@@ -24,6 +24,17 @@ class SSHPolicyTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("bash"), "Media group checks require Bash")
 class MediaGroupTests(unittest.TestCase):
+    def test_bootstrap_error_reports_location_and_preserves_exit_status(self):
+        header = (REPO / "scripts/bootstrap.sh").read_text().split('\nsource ', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "bootstrap-error.sh"
+            script.write_text(header + '\n(exit 7)\n')
+            result = subprocess.run([shutil.which("bash"), script.as_posix()],
+                                    capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertIn("bootstrap-error.sh:", result.stderr)
+        self.assertIn("(exit 7)", result.stderr)
+
     def lookup(self, status, entry=""):
         script = (REPO / "scripts/bootstrap.sh").read_text()
         start = script.index("if media_entry=$(getent group 10001); then")
