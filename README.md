@@ -56,9 +56,11 @@ listing is disabled; accepted uploads cannot execute as code.
    branches to `main`. Reviewers are optional; if enabled, approve within the app's
    45-minute infra wait deadline.
 2. Create an AgroZanjir-owned **GitHub App**, installed on **infra only**, with
-   repository **Contents: read/write**, **Actions: read**, Metadata read. No webhooks
+   repository **Contents: read/write**, **Actions: read/write**, Metadata read. No webhooks
    or organization permissions needed. Generate a private key. Short-lived App
    tokens trigger infra push workflows; ordinary GITHUB_TOKEN commits do not.
+   Existing installations must approve the Actions write permission so source
+   deploy retries can dispatch a fresh infra run without rebuilding the image.
 3. Put the App ID/private key in all three prod environments. Give the App a narrow
    bypass of infra/main rules if rules block its direct image/state commits.
 4. Permit Actions package publication/deletion in organization policies. After each
@@ -223,6 +225,13 @@ infrastructure validation first within the same workflow run. The server job
 requires validation to succeed; failed or cancelled checks skip deployment.
 Validation also runs independently on pull requests, but has no separate push run.
 The reusable validation workflow checks the same commit as its caller.
+
+Rerunning a source deploy job reuses the already-published immutable image. If its
+desired image file is unchanged, the source dispatches a new app deployment from
+infra/main and waits for the returned run ID and its exact receipt. The requested
+image is checked before server access so a superseded retry cannot deploy another
+release. Source deploy and image-scan jobs use `!cancelled()` so cancellation can
+stop them. A missing push run fails after two minutes instead of waiting 45 minutes.
 
 Compose has a brief app restart. Success requires container readiness and external
 HTTPS probes (including Django admin CSS). Infra publishes a secret-free receipt

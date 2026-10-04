@@ -41,6 +41,16 @@ class ValidationGateTests(unittest.TestCase):
             self.assertIn(check, validation)
         self.assertNotIn("continue-on-error:", validation)
 
+    def test_source_retry_checks_requested_image_before_server_access(self):
+        for app in ("backend", "frontend"):
+            with self.subTest(app=app):
+                source = (WORKFLOWS / f"deploy-{app}.yml").read_text()
+                self.assertIn("      expected_image:", source)
+                self.assertIn("EXPECTED_IMAGE: ${{ inputs.expected_image }}", source)
+                self.assertIn('"$IMAGE" != "$EXPECTED_IMAGE"', source)
+                self.assertLess(source.index('"$IMAGE" != "$EXPECTED_IMAGE"'),
+                                source.index('bash scripts/remote.sh deploy "$APP"'))
+
 
 if __name__ == "__main__":
     unittest.main()
