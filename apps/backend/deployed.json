@@ -1,12 +1,12 @@
 {
   "schema": 1,
   "app": "backend",
-  "current": "ghcr.io/agrozanjir/backend:backend-107cf5013c9cd58775d807900565cdc7a41039e6-37240005603-1@sha256:f3d9662488ac0434bf2ffde98cb0716462b556443a1a0e136acebbb8d2994fee",
-  "previous": null,
-  "release_id": "ghcr.io/agrozanjir/backend:backend-107cf5013c9cd58775d807900565cdc7a41039e6-37240005603-1@sha256:f3d9662488ac0434bf2ffde98cb0716462b556443a1a0e136acebbb8d2994fee",
-  "source_sha": "107cf5013c9cd58775d807900565cdc7a41039e6",
-  "infra_sha": "cea791b174d04c5ed2ae41c08ff4e5a95a5e668b",
-  "infra_run_id": "37240905915",
+  "current": "ghcr.io/agrozanjir/backend:backend-6c0ba18c3e197dc4c042de71566713794a440e75-37240913561-1@sha256:b7c99dc42cae4ff4085ec289a30c8ffe2b834ec74ac55c0f82a22079392d7e1e",
+  "previous": "ghcr.io/agrozanjir/backend:backend-107cf5013c9cd58775d807900565cdc7a41039e6-37240005603-1@sha256:f3d9662488ac0434bf2ffde98cb0716462b556443a1a0e136acebbb8d2994fee",
+  "release_id": "ghcr.io/agrozanjir/backend:backend-6c0ba18c3e197dc4c042de71566713794a440e75-37240913561-1@sha256:b7c99dc42cae4ff4085ec289a30c8ffe2b834ec74ac55c0f82a22079392d7e1e",
+  "source_sha": "6c0ba18c3e197dc4c042de71566713794a440e75",
+  "infra_sha": "1836d967c20ff4744032faebb187babf859230b2",
+  "infra_run_id": "37241053366",
   "infra_run_attempt": "1",
-  "deployed_at": "2026-10-04T22:42:11.200733+00:00"
+  "deployed_at": "2026-10-04T22:44:36.066392+00:00"
 }
