@@ -70,6 +70,14 @@ done
 rollback() {
   local status=$?
   trap - ERR
+  if [[ -f "$stage/public-health.headers" ]]; then
+    echo 'Public HTTPS probe response (routing/security diagnostics):' >&2
+    awk 'tolower($0) ~ /^(http\/|server:|content-type:|cf-ray:|cf-mitigated:|cf-error-type:|cf-error-origin:)/' \
+      "$stage/public-health.headers" >&2
+    if grep -qi '^cf-mitigated: challenge' "$stage/public-health.headers"; then
+      echo 'Cloudflare challenged the public probe. Inspect the cf-ray in Cloudflare Security Events; curl cannot complete a browser challenge.' >&2
+    fi
+  fi
   echo "Deployment failed; restoring $app's previous application configuration." >&2
   if [[ -n "$current" ]]; then
     for file in compose.yaml Caddyfile; do
@@ -107,14 +115,19 @@ compose up -d --no-deps --wait --wait-timeout 300 "$app"
 domain=$(sed -n 's/^DOMAIN=//p' "$ROOT/runtime/compose.env")
 if [[ "$app" = backend ]]; then
   curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+    --dump-header "$stage/public-health.headers" \
     --max-time 15 "https://$domain/api/v1/health/" >/dev/null
   curl --fail --silent --show-error --retry 3 --retry-all-errors --max-time 15 \
+    --dump-header "$stage/public-health.headers" \
     "https://$domain/django-admin/login/" >/dev/null
-  curl --fail --silent --show-error --max-time 15 "https://$domain/static/admin/css/base.css" >/dev/null
+  curl --fail --silent --show-error --max-time 15 --dump-header "$stage/public-health.headers" \
+    "https://$domain/static/admin/css/base.css" >/dev/null
 else
   curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+    --dump-header "$stage/public-health.headers" \
     --max-time 15 "https://$domain/healthz" >/dev/null
-  curl --fail --silent --show-error --max-time 15 "https://$domain/admin/users" >/dev/null
+  curl --fail --silent --show-error --max-time 15 --dump-header "$stage/public-health.headers" \
+    "https://$domain/admin/users" >/dev/null
 fi
 
 if [[ "$candidate" != "$current" ]]; then previous=$current; fi
