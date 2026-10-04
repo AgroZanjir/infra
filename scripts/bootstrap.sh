@@ -33,8 +33,14 @@ apt-get update -qq
 apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 usermod -aG docker "$username"
-media_group=$(getent group 10001 | cut -d: -f1)
-if [[ -z "$media_group" ]]; then
+if media_entry=$(getent group 10001); then
+  media_group=${media_entry%%:*}
+else
+  lookup_status=$?
+  if [[ "$lookup_status" != 2 ]]; then
+    echo "Media group lookup failed with exit code $lookup_status." >&2
+    exit "$lookup_status"
+  fi
   groupadd --gid 10001 agrozanjir-data
   media_group=agrozanjir-data
 fi

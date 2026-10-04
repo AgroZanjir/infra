@@ -22,6 +22,42 @@ class SSHPolicyTests(unittest.TestCase):
         self.assertEqual(settings["KbdInteractiveAuthentication"], "no")
 
 
+@unittest.skipUnless(shutil.which("bash"), "Media group checks require Bash")
+class MediaGroupTests(unittest.TestCase):
+    def lookup(self, status, entry=""):
+        script = (REPO / "scripts/bootstrap.sh").read_text()
+        start = script.index("if media_entry=$(getent group 10001); then")
+        end = script.index('\ninstall -d', start)
+        harness = '''set -Eeuo pipefail
+username=deploy
+getent() { printf '%s' "$MOCK_ENTRY"; return "$MOCK_STATUS"; }
+groupadd() { printf 'groupadd %s\\n' "$*"; }
+usermod() { printf 'usermod %s\\n' "$*"; }
+'''
+        return subprocess.run([shutil.which("bash"), "-c", harness + script[start:end]],
+                              env=os.environ | {"MOCK_STATUS": str(status), "MOCK_ENTRY": entry},
+                              capture_output=True, text=True, timeout=10)
+
+    def test_missing_group_is_created_under_strict_shell_options(self):
+        result = self.lookup(2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("groupadd --gid 10001 agrozanjir-data", result.stdout)
+        self.assertIn("usermod -aG agrozanjir-data deploy", result.stdout)
+
+    def test_existing_group_is_reused(self):
+        result = self.lookup(0, "existing-data:x:10001:\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("groupadd", result.stdout)
+        self.assertIn("usermod -aG existing-data deploy", result.stdout)
+
+    def test_lookup_errors_do_not_create_a_group(self):
+        result = self.lookup(1)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Media group lookup failed", result.stderr)
+        self.assertNotIn("groupadd", result.stdout)
+        self.assertNotIn("usermod", result.stdout)
+
+
 @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Linux SSH transport test")
 class BootstrapTransportTests(unittest.TestCase):
     def setUp(self):
