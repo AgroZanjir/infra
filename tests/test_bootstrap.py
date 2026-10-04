@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -144,6 +145,22 @@ if [[ "$command" = "docker info"* && "${MOCK_DOCKER_FAIL:-}" = 1 ]]; then exit 1
 @unittest.skipUnless(os.name == "posix" and getattr(os, "geteuid", lambda: -1)() == 0,
                      "Bootstrap preconditions need a disposable root test container")
 class BootstrapAccountTests(unittest.TestCase):
+    def test_container_directories_use_numeric_ownership_and_expected_modes(self):
+        source = (REPO / "scripts/bootstrap.sh").read_text()
+        start = source.index("# Container IDs need no matching host passwd entry.")
+        end = source.index("\nlock_server", start)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for _ in range(2):
+                result = subprocess.run(["bash", "-c", "set -Eeuo pipefail\n" + source[start:end]],
+                                        env=os.environ | {"ROOT": directory},
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for name, mode in (("media", 0o2770), ("caddy", 0o700), ("caddy-config", 0o700)):
+                    details = (root / "data" / name).stat()
+                    self.assertEqual((details.st_uid, details.st_gid), (10001, 10001))
+                    self.assertEqual(stat.S_IMODE(details.st_mode), mode)
+
     def test_missing_account_is_rejected_before_installing_packages(self):
         result = subprocess.run(["bash", str(REPO / "scripts/bootstrap.sh"), "/tmp/unused",
                                  "agrozanjir-test-missing-user", "22"],

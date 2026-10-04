@@ -56,8 +56,11 @@ usermod -aG "$media_group" "$username"
 install -d -m 750 -o "$username" -g "$deploy_group" "$ROOT" "$ROOT/scripts" "$ROOT/state" "$ROOT/apps" \
   "$ROOT/apps/backend" "$ROOT/apps/frontend" "$ROOT/postgres" "$ROOT/data"
 install -d -m 700 -o "$username" -g "$deploy_group" "$ROOT/runtime" "$ROOT/data/backup-work"
-install -d -m 2770 -o 10001 -g 10001 "$ROOT/data/media"
-install -d -m 700 -o 10001 -g 10001 "$ROOT/data/caddy" "$ROOT/data/caddy-config"
+# Container IDs need no matching host passwd entry. Assign them numerically after
+# creating the directories; install --owner requires a resolvable host user.
+install -d -m 700 "$ROOT/data/media" "$ROOT/data/caddy" "$ROOT/data/caddy-config"
+chown +10001:+10001 "$ROOT/data/media" "$ROOT/data/caddy" "$ROOT/data/caddy-config"
+chmod 2770 "$ROOT/data/media"
 lock_server
 install_bundle "$stage"
 install_runtime "$stage"
