@@ -3,12 +3,17 @@ set -Eeuo pipefail
 source "$(dirname "$0")/common.sh"
 stage=${1:?staging directory is required}
 username=${2:?deployment username is required}
-public_key=${3:?public key file is required}
-ssh_port=${4:-22}
+ssh_port=${3:-22}
 [[ $EUID = 0 ]] || { echo 'Bootstrap requires root/passwordless sudo.' >&2; exit 1; }
 [[ "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$username" != root ]] || exit 1
 [[ "$ssh_port" =~ ^[0-9]+$ && "$ssh_port" -gt 0 && "$ssh_port" -le 65535 ]] || exit 1
-ssh-keygen -lf "$public_key" >/dev/null
+# Account, authorized keys and sudo access are provisioned manually by the operator.
+id "$username" >/dev/null 2>&1 || {
+  echo "Create the deployment user '$username' and configure key-based SSH/passwordless sudo before bootstrap." >&2
+  exit 1
+}
+[[ $(id -u "$username") != 0 ]] || { echo 'Deployment user must be non-root.' >&2; exit 1; }
+deploy_group=$(id -gn "$username")
 # shellcheck source=/dev/null
 source /etc/os-release
 [[ "$ID" = ubuntu ]] || { echo 'Bootstrap supports Ubuntu only.' >&2; exit 1; }
@@ -27,7 +32,6 @@ printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download
 apt-get update -qq
 apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-id "$username" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$username"
 usermod -aG docker "$username"
 media_group=$(getent group 10001 | cut -d: -f1)
 if [[ -z "$media_group" ]]; then
@@ -35,24 +39,17 @@ if [[ -z "$media_group" ]]; then
   media_group=agrozanjir-data
 fi
 usermod -aG "$media_group" "$username"
-user_home=$(getent passwd "$username" | cut -d: -f6)
-install -d -m 700 -o "$username" -g "$username" "$user_home/.ssh"
-touch "$user_home/.ssh/authorized_keys"
-key=$(cat "$public_key")
-grep -qF "$key" "$user_home/.ssh/authorized_keys" || printf '%s\n' "$key" >>"$user_home/.ssh/authorized_keys"
-chown "$username:$username" "$user_home/.ssh/authorized_keys"
-chmod 600 "$user_home/.ssh/authorized_keys"
 
-install -d -m 750 -o "$username" -g "$username" "$ROOT" "$ROOT/scripts" "$ROOT/state" "$ROOT/apps" \
+install -d -m 750 -o "$username" -g "$deploy_group" "$ROOT" "$ROOT/scripts" "$ROOT/state" "$ROOT/apps" \
   "$ROOT/apps/backend" "$ROOT/apps/frontend" "$ROOT/postgres" "$ROOT/data"
-install -d -m 700 -o "$username" -g "$username" "$ROOT/runtime" "$ROOT/data/backup-work"
+install -d -m 700 -o "$username" -g "$deploy_group" "$ROOT/runtime" "$ROOT/data/backup-work"
 install -d -m 2770 -o 10001 -g 10001 "$ROOT/data/media"
 install -d -m 700 -o 10001 -g 10001 "$ROOT/data/caddy" "$ROOT/data/caddy-config"
 lock_server
 install_bundle "$stage"
 install_runtime "$stage"
-chown -R "$username:$username" "$ROOT/scripts" "$ROOT/postgres" "$ROOT/runtime" "$ROOT/state" "$ROOT/apps"
-chown "$username:$username" "$ROOT/compose.yaml" "$ROOT/Caddyfile"
+chown -R "$username:$deploy_group" "$ROOT/scripts" "$ROOT/postgres" "$ROOT/runtime" "$ROOT/state" "$ROOT/apps"
+chown "$username:$deploy_group" "$ROOT/compose.yaml" "$ROOT/Caddyfile"
 chmod 755 "$ROOT/postgres"
 
 install -d -m 755 /etc/docker
@@ -130,26 +127,15 @@ ExecStartPost=/usr/local/sbin/agrozanjir-docker-firewall
 UNIT
 /usr/local/sbin/agrozanjir-docker-firewall
 
-# This is executed only after the runner verifies the new user's SSH login.
-cat >/usr/local/sbin/agrozanjir-finalize-ssh <<'SSH'
-#!/usr/bin/env bash
-set -Eeuo pipefail
+# Keep the operator's root key login available, matching the manual-user setup.
 cat >/etc/ssh/sshd_config.d/00-agrozanjir.conf <<'CONFIG'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
-PermitRootLogin no
-AllowAgentForwarding no
-AllowTcpForwarding no
-X11Forwarding no
+PubkeyAuthentication yes
+PermitRootLogin prohibit-password
 CONFIG
 /usr/sbin/sshd -t
 systemctl reload ssh
-SSH
-chmod 755 /usr/local/sbin/agrozanjir-finalize-ssh
-printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/agrozanjir-finalize-ssh\n' "$username" \
-  >/etc/sudoers.d/agrozanjir-ssh
-chmod 440 /etc/sudoers.d/agrozanjir-ssh
-visudo -cf /etc/sudoers.d/agrozanjir-ssh
 
 cat >/etc/systemd/system/agrozanjir-backup.service <<UNIT
 [Unit]
@@ -201,7 +187,7 @@ lock_server
 COMPOSE_APP=backend compose exec -T backend python manage.py flushexpiredtokens
 MAINTENANCE
 chmod 750 "$ROOT/scripts/maintenance.sh"
-chown "$username:$username" "$ROOT/scripts/maintenance.sh"
+chown "$username:$deploy_group" "$ROOT/scripts/maintenance.sh"
 cat >/etc/systemd/system/agrozanjir-maintenance.service <<UNIT
 [Unit]
 Description=Expire AgroZanjir refresh-token blacklist entries
@@ -225,5 +211,5 @@ systemctl daemon-reload
 systemctl enable --now agrozanjir-backup.timer agrozanjir-backup-check.timer agrozanjir-maintenance.timer
 "$ROOT/scripts/backup.sh" --setup --locked
 docker compose version
-chown -R "$username:$username" "$stage"
+chown -R "$username:$deploy_group" "$stage"
 echo 'Bootstrap prepared Docker, IPv6, QUIC ports, persistence and maintenance. No application image was required.'

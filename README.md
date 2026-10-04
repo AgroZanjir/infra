@@ -92,7 +92,6 @@ and backend redeployment.
 | --- | --- |
 | `DOMAIN` | `agrozanjir.uz` |
 | `VPS_SSH_PORT` | `22` |
-| `VPS_BOOTSTRAP_USERNAME` | initial root/sudo login, default VPS_USERNAME |
 | `GUNICORN_WORKERS`, `GUNICORN_THREADS` | `2`, `4` |
 | `GUNICORN_TIMEOUT`, `GUNICORN_GRACEFUL_TIMEOUT` | `120`, `30` seconds |
 | `STARTUP_TIMEOUT` | `60` seconds, database/cache startup wait |
@@ -108,22 +107,80 @@ Shared configuration changes trigger deploy-infra; image files do not trigger it
 ## First server
 
 Recommended: fresh **Ubuntu 24.04 LTS amd64**. Bootstrap also accepts 22.04/26.04 LTS.
-Initial SSH login must have root or passwordless sudo. Final VPS_USERNAME must be
-non-root, e.g. `deploy`. The same private key must already authenticate the initial
-account; bootstrap installs its public key for deploy. VPS_BOOTSTRAP_USERNAME may
-be `root`. Keep provider console access for first machine configuration.
+Create the non-root deployment account manually before running any workflow,
+as in YuCRM. Both bootstrap and releases connect as `VPS_USERNAME`, e.g. `deploy`,
+using `VPS_SSH_KEY`. Bootstrap requires passwordless sudo on this existing account;
+it never creates login users, installs authorized keys or changes sudo grants.
+
+For a dedicated Actions key, run this in Windows PowerShell and leave its passphrase
+empty at the prompts (the unattended workflow cannot unlock a passphrase):
+
+```powershell
+ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\agrozanjir-actions-prod" -C "agrozanjir-actions-prod"
+Get-Content "$env:USERPROFILE\.ssh\agrozanjir-actions-prod.pub"
+```
+
+Log into the server with your existing root/operator credentials. Run the following
+as root, replacing the placeholder with the complete **public** key printed above.
+The user creation is skipped if `deploy` already exists; existing keys are retained.
+
+```bash
+id deploy >/dev/null 2>&1 || adduser --disabled-password --gecos '' deploy
+deploy_home=$(getent passwd deploy | cut -d: -f6)
+deploy_group=$(id -gn deploy)
+install -d -m 0700 -o deploy -g "$deploy_group" "$deploy_home/.ssh"
+cat >>"$deploy_home/.ssh/authorized_keys" <<'KEY'
+PASTE_THE_COMPLETE_SSH_PUBLIC_KEY_HERE
+KEY
+chown "deploy:$deploy_group" "$deploy_home/.ssh/authorized_keys"
+chmod 0600 "$deploy_home/.ssh/authorized_keys"
+printf '%s\n' 'deploy ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/agrozanjir-deploy
+chmod 0440 /etc/sudoers.d/agrozanjir-deploy
+visudo -cf /etc/sudoers.d/agrozanjir-deploy
+```
+
+This deliberately grants `deploy` full passwordless sudo, matching YuCRM. Treat its
+key as an administrator credential and keep it only in **infra/prod**. Docker group
+access added by bootstrap is also root-equivalent. Your root account and authorized
+keys remain intact; use a separate root key for your terminal and keep it outside GitHub.
+
+Before dispatching bootstrap, test from Windows:
+
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\agrozanjir-actions-prod" -p 22 deploy@YOUR_VPS_HOST "sudo -n true && echo ready"
+```
+
+In **infra → Settings → Environments → prod**, set these secrets:
+
+- `VPS_USERNAME`: `deploy`.
+- `VPS_HOST`: your server address.
+- `VPS_SSH_KEY`: the full private key file, including its BEGIN/END lines.
+- `VPS_SSH_KNOWN_HOSTS`: the independently verified server host-key line below.
+
+Set variable `VPS_SSH_PORT` only if it differs from `22`. The old bootstrap username
+variable is no longer used and can be deleted. Root credentials are not needed in GitHub.
 
 Obtain the SSH host fingerprint/key from the provider console or another trusted
 channel. VPS_SSH_KNOWN_HOSTS contains independently verified known_hosts line(s)
 for exact VPS_HOST; use `[host]:port` for nonstandard ports. Do not blindly trust
 network ssh-keyscan output. Strict verification is required.
 
+For example, in a trusted root/operator session (substitute the exact `VPS_HOST`):
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+awk -v host='YOUR_VPS_HOST' '{print host, $1, $2}' /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+The host key identifies the **server**; it is different from the deploy login key.
+
 1. Point DNS **A** to the server's IPv4. Add **AAAA** only for working provider-routed
    IPv6. Allow TCP 80/443, UDP 443, SSH TCP and ICMPv6 in provider firewalls.
-2. Run **server bootstrap** on main. It installs Docker/Compose, prepares users,
+2. Run **server bootstrap** on main. It installs Docker/Compose, prepares
    persistence, IPv6/QUIC buffers, host/Docker firewall rules and maintenance timers.
-   It verifies a second deploy-user SSH connection before disabling root/password
-   login. Docker group membership is root-equivalent: keep the key infrastructure-only.
+   It checks deploy's passwordless sudo before staging files and verifies Docker
+   access in a fresh SSH session afterward. SSH passwords are disabled, while
+   `PermitRootLogin prohibit-password` keeps **root login with existing keys** working.
    Bootstrap needs no Django/database secrets or app images.
 3. Run **deploy-infra** to initialize PostgreSQL, Redis and Caddy.
 4. Push/dispatch each app CI on main. Configure private package access after first
@@ -138,9 +195,11 @@ DNS to the VPS; a CDN must explicitly support QUIC and the origin configuration.
 Bootstrap is for dedicated machines and changes Docker, firewall and SSH settings.
 It preserves existing daemon JSON settings and can be rerun. Moving servers also
 requires transferring/restoring database, media and certificate data.
-Rerunning bootstrap requires an accessible administrator with passwordless sudo;
-the deployment user has no general sudo grant. If the initial account was root,
-use the provider console to arrange administrator access after root SSH is disabled.
+Rerun bootstrap with the same deploy account and its manually configured sudo grant.
+Root key login on the existing SSH port remains available for operator administration.
+If you ran the previous bootstrap version, first configure deploy's full sudo grant
+from an existing administrator session/provider console using the commands above.
+The corrected bootstrap replaces the previous root-blocking SSH drop-in.
 
 ## Release and recovery
 
@@ -229,8 +288,8 @@ python3 scripts/restic_cmd.py snapshots
 sudo bash scripts/restore.sh <snapshot-id-or-latest> --confirm-restore
 ```
 
-The restore command requires a trusted administrator session/provider console;
-the deployment user's restricted sudo grant covers only SSH finalization.
+The restore command requires sudo. Your manually provisioned deploy account can run
+it, or you can use your root/operator session.
 
 Test restore on a spare VPS. Restoring needs a compatible application schema and
 runtime settings. A failed database restore keeps the backend stopped and preserves

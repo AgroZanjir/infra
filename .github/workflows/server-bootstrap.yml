@@ -15,7 +15,6 @@ jobs:
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
-      VPS_BOOTSTRAP_USERNAME: ${{ vars.VPS_BOOTSTRAP_USERNAME }}
       VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
       VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
       VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT || '22' }}
@@ -33,3 +32,4 @@ jobs:
         run: |
           echo '### Server bootstrap completed' >> "$GITHUB_STEP_SUMMARY"
           echo 'Docker, dual-stack networking, QUIC ports and storage are ready. Deploy backend, then frontend.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Existing deploy account and root SSH key access are preserved; password SSH login is disabled.' >> "$GITHUB_STEP_SUMMARY"

@@ -19,10 +19,6 @@ app=${2:-infra}
 port=${VPS_SSH_PORT:-22}
 [[ "$port" =~ ^[0-9]+$ && "$port" -gt 0 && "$port" -le 65535 ]] || exit 1
 login=$VPS_USERNAME
-if [[ "$mode" = bootstrap ]]; then
-  login=${VPS_BOOTSTRAP_USERNAME:-$VPS_USERNAME}
-  [[ "$login" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || exit 1
-fi
 work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/agrozanjir.XXXXXXXX")
 stage="/tmp/agrozanjir-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 printf '%s\n' "$VPS_SSH_KEY" >"$work/key"
@@ -30,14 +26,21 @@ printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" >"$work/known_hosts"
 chmod 600 "$work/key" "$work/known_hosts"
 ssh_opts=(-i "$work/key" -p "$port" -o BatchMode=yes -o IdentitiesOnly=yes \
   -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$work/known_hosts" -o ConnectTimeout=15)
+staged=false
 cleanup() {
-  ssh "${ssh_opts[@]}" "$login@$VPS_HOST" "rm -rf -- '$stage'" >/dev/null 2>&1 || true
+  if [[ "$staged" = true ]]; then
+    ssh "${ssh_opts[@]}" "$login@$VPS_HOST" "rm -rf -- '$stage'" >/dev/null 2>&1 || true
+  fi
   rm -rf -- "$work"
 }
 trap cleanup EXIT
 if [[ "$mode" = bootstrap ]]; then
+  # Fail before uploading or changing the server if manual account setup is incomplete.
+  ssh "${ssh_opts[@]}" "$login@$VPS_HOST" 'sudo -n true' || {
+    echo 'Bootstrap requires the manually provisioned VPS_USERNAME account with key-based SSH and passwordless sudo.' >&2
+    exit 1
+  }
   python3 scripts/render_env.py "$work/runtime" --bootstrap
-  ssh-keygen -y -f "$work/key" >"$work/deploy.pub"
 else
   [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
   python3 scripts/render_env.py "$work/runtime"
@@ -56,20 +59,17 @@ path.chmod(0o600)
 PY
 fi
 ssh "${ssh_opts[@]}" "$login@$VPS_HOST" "mkdir -m 700 -- '$stage'"
+staged=true
 archive_files=(compose.yaml Caddyfile scripts postgres)
 if [[ "$mode" = deploy && "$app" != infra ]]; then archive_files+=("apps/$app"); fi
 local_files=(runtime docker-config)
-if [[ "$mode" = bootstrap ]]; then local_files+=(deploy.pub); fi
 tar -czf - "${archive_files[@]}" -C "$work" "${local_files[@]}" \
   | ssh "${ssh_opts[@]}" "$login@$VPS_HOST" "tar -xzf - -C '$stage'"
 if [[ "$mode" = bootstrap ]]; then
   ssh "${ssh_opts[@]}" "$login@$VPS_HOST" \
-    "sudo -n bash '$stage/scripts/bootstrap.sh' '$stage' '$VPS_USERNAME' '$stage/deploy.pub' '$port'"
-  # Verify a second connection with the non-root deployment key before hardening SSH.
+    "sudo -n bash '$stage/scripts/bootstrap.sh' '$stage' '$VPS_USERNAME' '$port'"
+  # A fresh connection receives the Docker group membership added during bootstrap.
   ssh "${ssh_opts[@]}" "$VPS_USERNAME@$VPS_HOST" 'docker info --format "{{.ServerVersion}}" >/dev/null'
-  ssh "${ssh_opts[@]}" "$VPS_USERNAME@$VPS_HOST" 'sudo -n /usr/local/sbin/agrozanjir-finalize-ssh'
-  # Bootstrap made the private staging directory removable by the verified user.
-  login=$VPS_USERNAME
 else
   ssh "${ssh_opts[@]}" "$login@$VPS_HOST" \
     "export DOCKER_CONFIG='$stage/docker-config'; bash '$stage/scripts/deploy.sh' '$app' '$stage' '$GITHUB_SHA' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT'"
