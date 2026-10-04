@@ -56,10 +56,11 @@ listing is disabled; accepted uploads cannot execute as code.
    branches to `main`. Reviewers are optional; if enabled, approve within the app's
    45-minute infra wait deadline.
 2. Create an AgroZanjir-owned **GitHub App**, installed on **infra only**, with
-   repository **Contents: read/write**, **Actions: read**, Metadata read. No webhooks
+   repository **Contents: read/write**, **Actions: read/write**, Metadata read. No webhooks
    or organization permissions needed. Generate a private key. Short-lived App
    tokens trigger infra push workflows; ordinary GITHUB_TOKEN commits do not.
-   Source repos commit image references and only read deployment results.
+   Source repos commit image references and read deployment results. Unchanged-image
+   retries dispatch an infra workflow using Actions write access.
 3. Put the App ID/private key in all three prod environments. Give the App a narrow
    bypass of infra/main rules if rules block its direct image/state commits.
 4. Permit Actions package publication/deletion in organization policies. After each
@@ -228,14 +229,14 @@ requires validation to succeed; failed or cancelled checks skip deployment.
 Validation also runs independently on pull requests, but has no separate push run.
 The reusable validation workflow checks the same commit as its caller.
 
-Source repos write only their own desired image file, then observe the push-triggered
-infra deployment with Actions read access. They never dispatch or rerun infra
-workflows. If deployment fails, rerun the failed deployment in infra, then rerun
-the source deploy job to verify its receipt and perform cleanup. Unchanged tags
-reuse their existing commit; no retry marker or duplicate commit is created.
-Source deploy and image-scan jobs use `!cancelled()` and the release wait handles
-termination signals. A missing push run fails after two minutes; the overall
-wait is bounded to 45 minutes. A completed failed run fails immediately.
+Source repos commit their desired image file and observe its push-triggered infra
+deployment. When retrying an unchanged image, the source dispatches a fresh app
+deployment from infra/main and verifies the returned run ID and exact receipt.
+Infra checks the expected image before connecting to the server, so a superseded
+retry cannot deploy a different release. Source deploy and image-scan jobs use
+`!cancelled()` and the release wait handles termination signals. A missing push
+run fails after two minutes; the overall wait is bounded to 45 minutes. Completed
+failed runs fail immediately, without registry cleanup.
 
 Compose has a brief app restart. Success requires container readiness. Public
 HTTPS probes, including Django admin CSS, run afterward through the configured

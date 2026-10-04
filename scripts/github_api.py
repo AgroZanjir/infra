@@ -109,7 +109,7 @@ class GitHub:
         result = self.request(self.base + "/contents/" + path + "?ref=main")
         return base64.b64decode(result["content"]).decode(), result["sha"]
 
-    def update_file(self, path, content, message, expected=None):
+    def update_file(self, path, content, message, expected=None, report_change=False):
         """Retry unrelated commits; expected protects rollback/state compare-and-swap."""
         for attempt in range(6):
             try:
@@ -123,14 +123,14 @@ class GitHub:
             if current == content:
                 query = urllib.parse.urlencode({"sha": "main", "path": path, "per_page": 1})
                 commit = self.request(self.base + "/commits?" + query)[0]["sha"]
-                return commit
+                return (commit, False) if report_change else commit
             payload = {"message": message, "branch": "main",
                        "content": base64.b64encode(content.encode()).decode()}
             if sha:
                 payload["sha"] = sha
             try:
                 commit = self.request(self.base + "/contents/" + path, "PUT", payload)["commit"]["sha"]
-                return commit
+                return (commit, True) if report_change else commit
             except urllib.error.HTTPError as error:
                 if error.code not in (409, 422) or attempt == 5:
                     raise
