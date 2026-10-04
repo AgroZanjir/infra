@@ -1,1 +1,12 @@
-{"schema":1,"app":"frontend","current":null,"previous":null}
+{
+  "schema": 1,
+  "app": "frontend",
+  "current": "ghcr.io/agrozanjir/frontend:frontend-14eed5af4dcff18aa08ef0deecff558491b32a75-37240011915-1@sha256:a4e1208ca745056dc5e013c8cd74e70379402b534369a66a91b965af654ca504",
+  "previous": null,
+  "release_id": "ghcr.io/agrozanjir/frontend:frontend-14eed5af4dcff18aa08ef0deecff558491b32a75-37240011915-1@sha256:a4e1208ca745056dc5e013c8cd74e70379402b534369a66a91b965af654ca504",
+  "source_sha": "14eed5af4dcff18aa08ef0deecff558491b32a75",
+  "infra_sha": "a7542e60a6a235a96b2ae55cf6310f9202c98958",
+  "infra_run_id": "37240120816",
+  "infra_run_attempt": "1",
+  "deployed_at": "2026-10-04T22:29:41.092326+00:00"
+}
