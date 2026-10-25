@@ -95,6 +95,8 @@ and backend redeployment.
 | Optional variable | Default / use |
 | --- | --- |
 | `DOMAIN` | `agrozanjir.uz` |
+| `DB_HOST`, `DB_PORT`, `DB_NAME` | PostgreSQL connection overrides; defaults: `postgres`, `5432`, `agrozanjir`. Set in infra/prod. The target database must already exist. |
+| `DB_USER` | Optional infra/prod **secret** overriding the PostgreSQL connection user; default: `agrozanjir`. The role must already exist and use `POSTGRES_PASSWORD`. |
 | `VPS_SSH_PORT` | `22` |
 | `GUNICORN_WORKERS`, `GUNICORN_THREADS` | `2`, `4` |
 | `GUNICORN_TIMEOUT`, `GUNICORN_GRACEFUL_TIMEOUT` | `120`, `30` seconds |
