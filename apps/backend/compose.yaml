@@ -9,9 +9,8 @@ services:
         format: raw
     volumes:
       - ${DEPLOY_ROOT:-/opt/agrozanjir}/data/media:/app/media
-    networks: [web, data]
+    networks: [web, data, database]
     depends_on:
-      postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
     read_only: true
     tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,mode=1777"]

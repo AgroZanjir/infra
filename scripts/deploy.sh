@@ -8,6 +8,10 @@ run_id=${4:?run id is required}
 attempt=${5:?attempt is required}
 [[ "$app" = backend || "$app" = frontend || "$app" = infra ]] || exit 1
 [[ -d "$stage/runtime" && -d "$stage/scripts" ]] || exit 1
+[[ -d "$ROOT/state" && -f "$ROOT/compose.yaml" ]] || {
+  echo "Server is not bootstrapped. Run server bootstrap first." >&2
+  exit 1
+}
 lock_server
 
 if [[ "$app" = infra ]]; then
@@ -32,7 +36,7 @@ if [[ "$app" = infra ]]; then
         cp -a "$stage/previous-shared/$directory/." "$ROOT/$directory/"
       fi
     done
-    COMPOSE_APP='' compose up -d --wait --wait-timeout 180 postgres redis caddy \
+    COMPOSE_APP='' compose up -d --wait --wait-timeout 180 redis caddy \
       || echo 'Shared recovery failed; inspect the server.' >&2
     exit "$status"
   }
@@ -41,7 +45,7 @@ if [[ "$app" = infra ]]; then
   install_runtime "$stage"
   COMPOSE_APP='' compose config --quiet
   COMPOSE_APP='' compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-  COMPOSE_APP='' compose up -d --wait --wait-timeout 180 postgres redis caddy
+  COMPOSE_APP='' compose up -d --wait --wait-timeout 180 redis caddy
   "$ROOT/scripts/backup.sh" --setup --locked
   trap - ERR
   echo 'Shared services and configuration applied. Redeploy backend to apply changed runtime variables.'
@@ -100,7 +104,7 @@ export COMPOSE_APP="$app"
 compose config --quiet
 compose pull "$app"
 compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-compose up -d --wait --wait-timeout 180 postgres redis caddy
+compose up -d --wait --wait-timeout 180 redis caddy
 "$ROOT/scripts/backup.sh" --setup --locked
 compose up -d --no-deps --wait --wait-timeout 300 "$app"
 

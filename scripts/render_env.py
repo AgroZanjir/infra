@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlunsplit
 
 ROOT = "/opt/agrozanjir"
 BACKEND_DEFAULTS = {
@@ -44,7 +44,12 @@ def render(directory: Path, env, *, bootstrap=False):
     domain = value(env, "DOMAIN", "agrozanjir.uz")
     if not re.fullmatch(r"(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?", domain):
         raise ValueError("DOMAIN must be a hostname")
-    write(directory / "compose.env", f"DEPLOY_ROOT={ROOT}\nDOMAIN={domain}\n")
+    db_network = value(env, "DB_NETWORK", "infrastructure_database")
+    db_container = value(env, "DB_CONTAINER", "infrastructure-postgres-postgres-1")
+    for name, setting in (("DB_NETWORK", db_network), ("DB_CONTAINER", db_container)):
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", setting):
+            raise ValueError(f"{name} must be a Docker resource name")
+    write(directory / "compose.env", f"DEPLOY_ROOT={ROOT}\nDOMAIN={domain}\nDB_NETWORK={db_network}\n")
     backup_names = ("RESTIC_REPOSITORY", "RESTIC_PASSWORD", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
     configured = all(value(env, name) for name in backup_names)
     backup = {name: value(env, name) for name in backup_names} if configured else {}
@@ -59,19 +64,29 @@ def render(directory: Path, env, *, bootstrap=False):
         print("Offsite backups disabled: missing or incomplete S3/restic configuration.")
     if bootstrap:
         return
-    required = ("DJANGO_SECRET_KEY", "POSTGRES_ADMIN_PASSWORD", "POSTGRES_PASSWORD", "REDIS_PASSWORD")
+    required = ("DJANGO_SECRET_KEY", "POSTGRES_PASSWORD", "REDIS_PASSWORD")
     for name in required:
         if not value(env, name):
             raise ValueError(f"Required production secret is missing: {name}")
     if len(value(env, "DJANGO_SECRET_KEY")) < 50:
         raise ValueError("DJANGO_SECRET_KEY must contain at least 50 characters")
-    for name in ("POSTGRES_ADMIN_PASSWORD", "POSTGRES_PASSWORD", "REDIS_PASSWORD"):
+    for name in ("POSTGRES_PASSWORD", "REDIS_PASSWORD"):
         if len(value(env, name)) < 20:
             raise ValueError(f"{name} must contain at least 20 characters")
-    for filename, name in (("postgres_admin_password", "POSTGRES_ADMIN_PASSWORD"),
-                           ("postgres_app_password", "POSTGRES_PASSWORD"),
-                           ("redis_password", "REDIS_PASSWORD")):
-        write(directory / filename, value(env, name))
+    write(directory / "redis_password", value(env, "REDIS_PASSWORD"))
+    db_host = value(env, "DB_HOST", "postgres")
+    db_port = value(env, "DB_PORT", "5432")
+    db_name = value(env, "DB_NAME", "agrozanjir_db")
+    db_user = value(env, "DB_USER", "agrozanjir_user")
+    if not db_port.isdecimal() or not 1 <= int(db_port) <= 65535:
+        raise ValueError("DB_PORT must be between 1 and 65535")
+    if not re.fullmatch(r"[a-zA-Z0-9_.:-]+", db_host):
+        raise ValueError("DB_HOST must be a hostname or IP address")
+    host = f"[{db_host}]" if ":" in db_host and not db_host.startswith("[") else db_host
+    database_url = urlunsplit(("postgresql", quote(db_user, safe="") + ":" +
+        quote(value(env, "POSTGRES_PASSWORD"), safe="") + f"@{host}:{db_port}",
+        "/" + quote(db_name, safe=""), "", ""))
+    write(directory / "database.json", json.dumps({"container": db_container, "name": db_name, "user": db_user}))
     # Redis configuration's quoted strings accept JSON escapes for these values.
     redis_password = json.dumps(value(env, "REDIS_PASSWORD"), ensure_ascii=True)
     write(directory / "redis.conf", "bind 0.0.0.0\nprotected-mode yes\nappendonly yes\ndir /data\nrequirepass " + redis_password + "\n")
@@ -80,7 +95,7 @@ def render(directory: Path, env, *, bootstrap=False):
         "DJANGO_SECRET_KEY": value(env, "DJANGO_SECRET_KEY"),
         "ALLOWED_HOSTS": f"{domain},localhost,127.0.0.1",
         "CORS_ALLOWED_ORIGINS": "", "CSRF_TRUSTED_ORIGINS": f"https://{domain}",
-        "DATABASE_URL": "postgresql://agrozanjir:" + quote(value(env, "POSTGRES_PASSWORD"), safe="") + "@postgres:5432/agrozanjir",
+        "DATABASE_URL": database_url,
         "CACHE_URL": "redis://:" + quote(value(env, "REDIS_PASSWORD"), safe="") + "@redis:6379/1",
         "ANTHROPIC_API_KEY": value(env, "ANTHROPIC_API_KEY"),
     })

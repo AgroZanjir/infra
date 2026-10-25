@@ -20,8 +20,7 @@ if [[ -f "$ROOT/apps/backend/image.env" ]] && python3 "$ROOT/scripts/server_stat
   backend_present=true
   COMPOSE_APP=backend compose stop backend
 fi
-COMPOSE_APP='' compose exec -T --user postgres postgres pg_restore -U agrozanjir -d agrozanjir \
-  --clean --if-exists --no-owner --exit-on-error <"${dumps[0]}"
+python3 "$ROOT/scripts/database_dump.py" "$ROOT/runtime/database.json" --restore <"${dumps[0]}"
 rsync -a --delete --chown=10001:10001 "$media/" "$ROOT/data/media/"
 if $backend_present; then
   COMPOSE_APP=backend compose up -d --no-deps --wait --wait-timeout 300 backend

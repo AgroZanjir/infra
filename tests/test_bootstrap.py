@@ -12,15 +12,14 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 
 
-class SSHPolicyTests(unittest.TestCase):
-    def test_root_key_login_remains_available_and_password_login_is_disabled(self):
+class HostPolicyTests(unittest.TestCase):
+    def test_existing_host_configuration_is_operator_managed(self):
         script = (REPO / "scripts/bootstrap.sh").read_text()
-        config = re.search(r"<<'CONFIG'\n(.*?)\nCONFIG", script, re.DOTALL).group(1)
-        settings = dict(line.split(maxsplit=1) for line in config.splitlines())
-        self.assertEqual(settings["PermitRootLogin"], "prohibit-password")
-        self.assertEqual(settings["PubkeyAuthentication"], "yes")
-        self.assertEqual(settings["PasswordAuthentication"], "no")
-        self.assertEqual(settings["KbdInteractiveAuthentication"], "no")
+        for command in ("apt-get", "systemctl restart docker", "/etc/docker/", "/etc/ssh/",
+                        "ufw ", "iptables", "sysctl --system"):
+            self.assertNotIn(command, script)
+        self.assertIn('docker info', script)
+        self.assertIn('"docker", "network", "inspect"', script)
 
 
 @unittest.skipUnless(shutil.which("bash"), "Media group checks require Bash")

@@ -50,11 +50,28 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(settings["DJANGO_SECRET_KEY"], ENV["DJANGO_SECRET_KEY"])
         self.assertIn("%24%23%40%3A%27", settings["DATABASE_URL"])
         self.assertEqual(settings["CORS_ALLOWED_ORIGINS"], "")
-        self.assertEqual((self.directory / "postgres_app_password").read_text(), ENV["POSTGRES_PASSWORD"])
+        self.assertFalse((self.directory / "postgres_admin_password").exists())
+        self.assertFalse((self.directory / "postgres_app_password").exists())
+
+    def test_shared_database_settings_and_no_admin_secret(self):
+        from urllib.parse import urlsplit, unquote
+        env = ENV | {"DB_HOST": "postgres", "DB_PORT": "6543", "DB_NAME": "custom_db",
+                     "DB_USER": "custom@user", "DB_NETWORK": "shared_database"}
+        env.pop("POSTGRES_ADMIN_PASSWORD")
+        render(self.directory, env)
+        settings = dict(line.split("=", 1) for line in (self.directory / "backend.env").read_text().splitlines())
+        url = urlsplit(settings["DATABASE_URL"])
+        self.assertEqual((url.hostname, url.port, url.path), ("postgres", 6543, "/custom_db"))
+        self.assertEqual(unquote(url.username), "custom@user")
+        self.assertEqual(unquote(url.password), ENV["POSTGRES_PASSWORD"])
+        self.assertIn("DB_NETWORK=shared_database", (self.directory / "compose.env").read_text())
+        database = json.loads((self.directory / "database.json").read_text())
+        self.assertEqual(database["name"], "custom_db")
 
     def test_newlines_missing_secrets_and_invalid_domains_fail(self):
         for env in (ENV | {"DJANGO_SECRET_KEY": "injected\nDEBUG=True"},
-                    ENV | {"POSTGRES_PASSWORD": ""}, ENV | {"DOMAIN": "bad;hostname"}):
+                    ENV | {"POSTGRES_PASSWORD": ""}, ENV | {"DOMAIN": "bad;hostname"},
+                    ENV | {"DB_PORT": "0"}, ENV | {"DB_NETWORK": "bad\nnetwork"}):
             with self.assertRaises(ValueError):
                 render(self.directory, env)
 

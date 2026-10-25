@@ -44,12 +44,12 @@ install_bundle() {
 install_runtime() {
   local stage=$1
   # Directory permissions protect host files; readable bind-mounted secret files
-  # are necessary for the stock postgres/redis images after they drop root.
+  # are necessary for the stock Redis image after it drops root.
   chmod 700 "$ROOT/runtime"
   for file in "$stage"/runtime/*; do
     [[ -f "$file" ]] && install -m 600 "$file" "$ROOT/runtime/$(basename "$file")"
   done
-  for name in postgres_admin_password postgres_app_password redis_password redis.conf; do
+  for name in redis_password redis.conf; do
     [[ ! -f "$ROOT/runtime/$name" ]] || chmod 644 "$ROOT/runtime/$name"
   done
   if [[ $(cat "$stage/runtime/backup-enabled") != true ]]; then

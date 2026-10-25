@@ -19,22 +19,22 @@ flowchart LR
 
 ## Layout
 
-- `compose.yaml`: PostgreSQL 18, Redis, Caddy and private networks.
+- `compose.yaml`: Redis, Caddy, private app networks and the external PostgreSQL network.
 - `Caddyfile`: HTTPS/HTTP3 and same-origin routing.
 - `apps/backend/` and `apps/frontend/`: each has its own Compose fragment,
   `image.env` desired digest reference and `deployed.json` successful receipt.
 - `scripts/remote.sh`: runner transport with pinned SSH host keys.
-- `scripts/bootstrap.sh`: prepare Ubuntu; no app images required.
+- `scripts/bootstrap.sh`: prepare application storage/timers on an existing Docker host.
 - `scripts/deploy.sh`: replace one app, verify and recover on failure.
 - `scripts/backup.sh` and `restore.sh`: optional encrypted offsite backup/restore.
-- `postgres/10-app.sh`: restricted application database role.
+- `postgres/10-app.sh`: legacy standalone database initializer; unused with shared PostgreSQL.
 
 Server files live in `/opt/agrozanjir`. Generated secrets live in private `runtime/`;
-Git contains none. PostgreSQL 18 mounts a persistent named volume at
-`/var/lib/postgresql`. Media and Caddy certificates persist under `data/`.
+Git contains none. PostgreSQL and its storage belong to the operator-managed
+container. Media and Caddy certificates persist under `data/`.
 Redis is shared and persistent. Only Caddy publishes ports. Backend, frontend and
 Caddy have non-root users, read-only root filesystems and dropped capabilities.
-Stock PostgreSQL/Redis entrypoints prepare volumes as root, then drop privileges.
+The stock Redis entrypoint prepares its volume as root, then drops privileges.
 
 | Route | Service |
 | --- | --- |
@@ -77,7 +77,7 @@ listing is disabled; accepted uploads cannot execute as code.
 | --- | --- | --- |
 | backend | `INFRA_APP_PRIVATE_KEY` | `INFRA_APP_ID` |
 | frontend | `INFRA_APP_PRIVATE_KEY` | `INFRA_APP_ID` |
-| infra | `INFRA_APP_PRIVATE_KEY`, `VPS_HOST`, `VPS_USERNAME`, `VPS_SSH_KEY`, `VPS_SSH_KNOWN_HOSTS`, `DJANGO_SECRET_KEY`, `POSTGRES_ADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD` | `INFRA_APP_ID`; optional settings below |
+| infra | `INFRA_APP_PRIVATE_KEY`, `VPS_HOST`, `VPS_USERNAME`, `VPS_SSH_KEY`, `VPS_SSH_KNOWN_HOSTS`, `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, optional `DB_USER`, `REDIS_PASSWORD` | `INFRA_APP_ID`; optional settings below |
 
 GITHUB_TOKEN is automatic. **All runtime secrets/variables belong to infra/prod.**
 App repos have no server credentials. Production frontend needs no build variables:
@@ -87,16 +87,18 @@ secret; without it the assistant reports unavailable.
 Use independent random database/cache passwords (20+ characters). Django's key
 must have 50+ characters and 5+ distinct characters. Single-line `$`, quotes and `#`
 are preserved as raw values; connection URL passwords are percent-encoded.
-Database admin and application passwords must differ. Existing PostgreSQL volumes
-keep their role passwords: do not rotate only the GitHub secret. Rotate roles and
-secrets together in a maintenance window. Redis rotation requires a Redis restart
+The shared database administrator password is not required by this deployment.
+`POSTGRES_PASSWORD` must match the existing application role. Rotate that role and
+its secret together in a maintenance window. Redis rotation requires a Redis restart
 and backend redeployment.
 
 | Optional variable | Default / use |
 | --- | --- |
 | `DOMAIN` | `agrozanjir.uz` |
-| `DB_HOST`, `DB_PORT`, `DB_NAME` | PostgreSQL connection overrides; defaults: `postgres`, `5432`, `agrozanjir`. Set in infra/prod. The target database must already exist. |
-| `DB_USER` | Optional infra/prod **secret** overriding the PostgreSQL connection user; default: `agrozanjir`. The role must already exist and use `POSTGRES_PASSWORD`. |
+| `DB_HOST`, `DB_PORT`, `DB_NAME` | PostgreSQL connection overrides; defaults: `postgres`, `5432`, `agrozanjir_db`. Set in infra/prod. The target database must already exist. |
+| `DB_USER` | Optional infra/prod **secret** overriding the PostgreSQL connection user; default: `agrozanjir_user`. The role must already exist and use `POSTGRES_PASSWORD`. |
+| `DB_NETWORK` | Existing external Docker network; default: `infrastructure_database` |
+| `DB_CONTAINER` | Existing PostgreSQL container for backup/restore; default: `infrastructure-postgres-postgres-1` |
 | `VPS_SSH_PORT` | `22` |
 | `GUNICORN_WORKERS`, `GUNICORN_THREADS` | `2`, `4` |
 | `GUNICORN_TIMEOUT`, `GUNICORN_GRACEFUL_TIMEOUT` | `120`, `30` seconds |
@@ -182,17 +184,16 @@ The host key identifies the **server**; it is different from the deploy login ke
 
 1. Point DNS **A** to the server's IPv4. Add **AAAA** only for working provider-routed
    IPv6. Allow TCP 80/443, UDP 443, SSH TCP and ICMPv6 in provider firewalls.
-2. Run **server bootstrap** on main. It installs Docker/Compose, prepares
-   persistence, IPv6/QUIC buffers, host/Docker firewall rules and maintenance timers.
-   It checks deploy's passwordless sudo before staging files and verifies Docker
-   access in a fresh SSH session afterward. SSH passwords are disabled, while
-   `PermitRootLogin prohibit-password` keeps **root login with existing keys** working.
-   Bootstrap needs no Django/database secrets or app images.
-3. Push/dispatch each app CI on main. Each app commits its image reference here;
-   infra validates and deploys it, starting PostgreSQL, Redis and Caddy as needed.
-   No separate deploy-infra run is required for initial setup. Configure private
-   package access after first publish. Apps observe their matching infra deployment
-   before registry cleanup.
+2. Provision Docker/Compose, Python 3, `flock`, `rsync`, a Docker group, and the
+   shared PostgreSQL container/network on the host. Install restic if enabling backups.
+   Create the application database and role beforehand. Configure provider/host
+   firewalls for TCP 80/443, UDP 443 and deployment SSH.
+3. Run **server bootstrap** on main. It prepares application storage, deploy's
+   Docker/media group membership, and maintenance timers. It leaves host APT,
+   Docker configuration, networking, firewall and SSH settings untouched.
+   Run **deploy-infra**, then push/dispatch each app CI on main. App deployments
+   start Redis and Caddy as needed and connect the backend to the shared database.
+   Configure private package access after first publish.
 4. Seed reference data and create your administrator using the commands below.
    Check website, sign-in, Django admin and both health endpoints.
 
@@ -201,14 +202,9 @@ QUIC requires end-to-end UDP 443. Docker's private IPv6 subnet does not give the
 VPS public IPv6: provider routing and AAAA must work. The configured public domain
 can use direct DNS, a proxy or a CDN. Public probes report routing/security issues separately from
 container readiness and do not block initial rollout.
-Bootstrap is for dedicated machines and changes Docker, firewall and SSH settings.
-It preserves existing daemon JSON settings and can be rerun. Moving servers also
-requires transferring/restoring database, media and certificate data.
-Rerun bootstrap with the same deploy account and its manually configured sudo grant.
-Root key login on the existing SSH port remains available for operator administration.
-If you ran the previous bootstrap version, first configure deploy's full sudo grant
-from an existing administrator session/provider console using the commands above.
-The corrected bootstrap replaces the previous root-blocking SSH drop-in.
+Bootstrap can be rerun with the same manually provisioned deploy account and
+passwordless sudo grant. Moving servers also requires transferring/restoring
+application database, media and certificate data.
 
 ## Release and recovery
 
@@ -306,6 +302,9 @@ Dumps and media are sequential, not an atomic cross-resource snapshot; use a wri
 maintenance window if strictly consistent snapshots are required.
 
 Daily 02:30 Asia/Tashkent backups retain 7 daily, 4 weekly and 6 monthly snapshots;
+Backups use local administrator access inside `DB_CONTAINER` and select only
+`DB_NAME`; restores assign objects to `DB_USER`. No shared administrator password
+is copied into the app.
 Sunday 03:30 integrity checks run restic check. Inspect with
 `systemctl list-timers 'agrozanjir-*'` and `journalctl -u agrozanjir-backup.service`.
 
@@ -334,7 +333,7 @@ python3 tests/validate_compose.py
 ```
 
 Real Bash failure-path tests use fake Docker/HTTPS clients. Compose validation uses
-synthetic secrets and starts no services. The Ubuntu bootstrap's systemd/firewall/SSH
+synthetic secrets and starts no services. Bootstrap's storage/group/systemd
 steps still need validation on your target VPS; container tests cannot certify
 provider routing. Base images and Actions are digest/commit pinned: update deliberately
 and rerun tests/scans. Frontend has a narrow expiring build-dependency exception

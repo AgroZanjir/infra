@@ -24,8 +24,7 @@ fi
 mkdir -p "$ROOT/data/backup-work"
 work=$(mktemp -d "$ROOT/data/backup-work/run.XXXXXXXX")
 trap 'rm -f "$work/postgres.dump"; rmdir "$work"' EXIT
-COMPOSE_APP='' compose exec -T --user postgres postgres \
-  pg_dump -U agrozanjir -d agrozanjir --format custom >"$work/postgres.dump"
+python3 "$ROOT/scripts/database_dump.py" "$ROOT/runtime/database.json" >"$work/postgres.dump"
 [[ -s "$work/postgres.dump" ]] || { echo 'Database dump is empty' >&2; exit 1; }
 restic_cmd backup --tag agrozanjir "$work/postgres.dump" "$ROOT/data/media"
 restic_cmd forget --tag agrozanjir --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune

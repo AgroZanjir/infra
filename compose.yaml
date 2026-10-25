@@ -7,26 +7,6 @@ x-logging: &logging
     max-file: "3"
 
 services:
-  postgres:
-    image: postgres:18@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_DB: postgres
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
-    secrets: [postgres_admin_password, postgres_app_password]
-    volumes:
-      - postgres-data:/var/lib/postgresql
-      - ${DEPLOY_ROOT:-/opt/agrozanjir}/postgres:/docker-entrypoint-initdb.d:ro
-    networks: [data]
-    healthcheck:
-      test: [CMD-SHELL, "pg_isready -U postgres -d postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    security_opt: [no-new-privileges:true]
-    logging: *logging
-
   redis:
     image: redis:8-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
     restart: unless-stopped
@@ -74,24 +54,17 @@ services:
     logging: *logging
 
 networks:
-  web:
-    enable_ipv6: true
-    ipam:
-      config:
-        - subnet: 172.28.40.0/24
-        - subnet: fd42:7a:2::/64
+  database:
+    external: true
+    name: ${DB_NETWORK:-infrastructure_database}
+  web: {}
   data:
     internal: true
 
 volumes:
-  postgres-data:
   redis-data:
 
 secrets:
-  postgres_admin_password:
-    file: ${DEPLOY_ROOT:-/opt/agrozanjir}/runtime/postgres_admin_password
-  postgres_app_password:
-    file: ${DEPLOY_ROOT:-/opt/agrozanjir}/runtime/postgres_app_password
   redis_password:
     file: ${DEPLOY_ROOT:-/opt/agrozanjir}/runtime/redis_password
   redis_config:

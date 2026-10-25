@@ -24,6 +24,7 @@ jobs:
       VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
       VPS_SSH_PORT: ${{ vars.VPS_SSH_PORT || '22' }}
       DOMAIN: ${{ vars.DOMAIN || 'agrozanjir.uz' }}
+      DB_NETWORK: ${{ vars.DB_NETWORK }}
       RESTIC_REPOSITORY: ${{ vars.RESTIC_REPOSITORY }}
       RESTIC_PASSWORD: ${{ secrets.RESTIC_PASSWORD }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -36,5 +37,5 @@ jobs:
       - name: Bootstrap summary
         run: |
           echo '### Server bootstrap completed' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Docker, dual-stack networking, QUIC ports and storage are ready. Deploy backend, then frontend.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Existing deploy account and root SSH key access are preserved; password SSH login is disabled.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Application storage and maintenance are ready on the existing Docker host. Deploy infra, backend, then frontend.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Host Docker, PostgreSQL, APT, firewall and SSH settings are managed by the operator.' >> "$GITHUB_STEP_SUMMARY"
